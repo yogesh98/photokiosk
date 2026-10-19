@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2400" height="1600" viewBox="0 0 2400 1600">
+  <rect width="2400" height="1600" fill="#00b140"/>
+  <g fill="#f9e6ae" font-family="Arial, sans-serif" text-anchor="middle">
+    <text x="1200" y="120" font-size="45" font-weight="700">SYNTHETIC CAMERA TEST</text>
+    <text x="1200" y="177" font-size="28">Generated geometric fixture — no guest or physical camera</text>
+  </g>
+  <path d="M650 1600V1390Q650 1140 918 1075L1040 1040H1360L1482 1075Q1750 1140 1750 1390V1600Z" fill="#263f63"/>
+  <path d="M1050 995V1120Q1200 1235 1350 1120V995Z" fill="#d69b76"/>
+  <path d="M1050 1104L1200 1197L1350 1104L1393 1151L1280 1290H1120L1007 1151Z" fill="#f3e5cf"/>
+  <path d="M1000 1230L1077 1600H1323L1400 1230L1200 1340Z" fill="#34547d"/>
+  <ellipse cx="1200" cy="720" rx="302" ry="365" fill="#51392c"/>
+  <ellipse cx="915" cy="775" rx="55" ry="86" fill="#eebf97"/>
+  <ellipse cx="1485" cy="775" rx="55" ry="86" fill="#eebf97"/>
+  <path d="M925 680Q925 443 1200 443Q1475 443 1475 680V790Q1475 1075 1200 1090Q925 1075 925 790Z" fill="#eebf97"/>
+  <path d="M906 700Q880 398 1150 362Q1423 323 1513 639L1456 712L1418 569Q1214 639 1095 517Q1050 626 948 661L936 735Z" fill="#51392c"/>
+  <path d="M1014 713Q1072 687 1128 716M1272 716Q1328 687 1386 713" fill="none" stroke="#704a37" stroke-width="16" stroke-linecap="round"/>
+  <ellipse cx="1070" cy="763" rx="20" ry="26" fill="#303534"/>
+  <ellipse cx="1330" cy="763" rx="20" ry="26" fill="#303534"/>
+  <circle cx="1077" cy="755" r="7" fill="#fff"/>
+  <circle cx="1337" cy="755" r="7" fill="#fff"/>
+  <path d="M1200 785L1180 875L1214 881" fill="none" stroke="#cd906e" stroke-width="13" stroke-linecap="round"/>
+  <path d="M1093 928Q1200 1017 1307 928" fill="#fff8ed" stroke="#9d594a" stroke-width="13" stroke-linejoin="round"/>
+  <circle cx="1034" cy="876" r="39" fill="#e6a68c" opacity=".6"/>
+  <circle cx="1366" cy="876" r="39" fill="#e6a68c" opacity=".6"/>
+  <rect x="1068" y="1400" width="264" height="96" rx="18" fill="#f9e6ae"/>
+  <text x="1200" y="1462" fill="#263f63" font-family="Arial, sans-serif" font-size="37" font-weight="700" text-anchor="middle">TEST FRAME</text>
+</svg>
