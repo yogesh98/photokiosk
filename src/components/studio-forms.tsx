@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useId,
   useRef,
   useState,
   type FormEvent,
@@ -25,10 +26,13 @@ import {
   Usb,
   X,
 } from "lucide-react";
-import { LivePreview } from "@/components/kiosk/live-preview";
+import { LivePreview, type PreviewPerformance } from "@/components/kiosk/live-preview";
+import { AI_ACCELERATIONS, AI_MODELS, type AiRuntimeInfo } from "@/lib/ai-models";
+import { previewPerformanceKey } from "@/lib/preview-performance";
 import { saveCameraSetup } from "@/lib/camera-setup";
 import type {
   Background,
+  BackgroundMode,
   KioskSettings,
   PhotoSession,
 } from "@/lib/kiosk-types";
@@ -45,6 +49,20 @@ import {
   type CameraState,
 } from "./studio-shared";
 
+const BACKGROUND_OPTIONS: Array<{
+  value: BackgroundMode;
+  label: string;
+  detail: string;
+}> = [
+  {
+    value: "green-screen",
+    label: "Green screen",
+    detail: "Use a physical green backdrop.",
+  },
+  { value: "ai", label: "AI people", detail: "No green screen needed." },
+  { value: "off", label: "Off", detail: "Keep the camera’s original scene." },
+];
+
 export function ChromaSettings({
   settings,
   background,
@@ -57,82 +75,299 @@ export function ChromaSettings({
   onSave: SaveSettings;
 }) {
   const [chroma, setChroma] = useState(settings.chroma);
+  const [backgroundMode, setBackgroundMode] = useState(settings.backgroundMode);
+  const [aiModel, setAiModel] = useState(settings.aiModel);
+  const [aiAcceleration, setAiAcceleration] = useState(settings.aiAcceleration);
   const [preview, setPreview] = useState(false);
+  const [runtime, setRuntime] = useState<AiRuntimeInfo | null>(null);
+  const [performance, setPerformance] = useState<PreviewPerformance | null>(null);
+  const [measurements, setMeasurements] = useState<Record<string, PreviewPerformance>>({});
+  const modeGroupId = useId();
+  const modelGroupId = useId();
+  const accelerationGroupId = useId();
+  const draftChroma = { ...chroma, enabled: backgroundMode === "green-screen" };
+  const recordPerformance = useCallback((value: PreviewPerformance | null) => {
+    if (!preview || backgroundMode !== "ai" ||
+      (value && (value.model !== aiModel || value.acceleration !== aiAcceleration))) return;
+    setPerformance(value);
+    if (value && value.samples >= 5)
+      setMeasurements((previous) => ({ ...previous, [previewPerformanceKey(value)]: value }));
+  }, [preview, backgroundMode, aiModel, aiAcceleration]);
+  const recordRuntime = useCallback((value: AiRuntimeInfo | null) => {
+    if (!preview || backgroundMode !== "ai") return;
+    setRuntime(value);
+    setPerformance(null);
+  }, [preview, backgroundMode]);
+  const comparisonRows = Object.entries(measurements);
+  const activeKey = runtime ? previewPerformanceKey({ model: aiModel, acceleration: aiAcceleration, runtime }) : null;
+  const hasActiveMeasurement = activeKey !== null && activeKey in measurements;
+  const hasSelectedMeasurement = comparisonRows.some(([, value]) =>
+    value.model === aiModel && value.acceleration === aiAcceleration);
   return (
     <section className="panel chroma-panel">
       <div className="section-heading">
         <div>
           <h2>
-            <Sparkles size={19} />A little green screen magic
+            <Sparkles size={19} />Background replacement
           </h2>
-          <p>Fine-tune your background removal for clean, natural edges.</p>
+          <p>Choose a green screen, use AI, or keep the original scene.</p>
         </div>
-        <Toggle
-          checked={chroma.enabled}
-          label="Enable green screen removal"
-          onChange={(enabled) => setChroma({ ...chroma, enabled })}
-        />
       </div>
+      <fieldset
+        className="background-mode-field"
+        aria-describedby={`${modeGroupId}-help`}
+        disabled={busy}
+      >
+        <legend>Background mode</legend>
+        <div className="background-mode-options">
+          {BACKGROUND_OPTIONS.map((mode) => (
+            <label className="background-mode-option" key={mode.value}>
+              <input
+                type="radio"
+                name={modeGroupId}
+                value={mode.value}
+                checked={backgroundMode === mode.value}
+                onChange={() => {
+                  setBackgroundMode(mode.value);
+                  setPerformance(null);
+                  setRuntime(null);
+                }}
+              />
+              <span>
+                <strong>{mode.label}</strong>
+                <small>{mode.detail}</small>
+              </span>
+            </label>
+          ))}
+        </div>
+        <p
+          className="background-mode-help"
+          id={`${modeGroupId}-help`}
+          aria-live="polite"
+        >
+          {backgroundMode === "ai"
+            ? "AI runs on this device and works best with people close to the camera in even light. Fine hair and props can have imperfect edges."
+            : backgroundMode === "green-screen"
+              ? "Keep your green screen smooth and evenly lit, then adjust the sliders for natural edges."
+              : "Background replacement is off. Your photos will keep everything visible in the camera."}
+        </p>
+      </fieldset>
+      {backgroundMode === "ai" && (
+        <fieldset
+          className="background-mode-field ai-model-field"
+          aria-describedby={`${modelGroupId}-help`}
+          disabled={busy}
+        >
+          <legend>AI model</legend>
+          <div className="background-mode-options">
+            {AI_MODELS.map((model) => (
+              <label className="background-mode-option" key={model.id}>
+                <input
+                  type="radio"
+                  name={modelGroupId}
+                  value={model.id}
+                  checked={aiModel === model.id}
+                  onChange={() => {
+                    setAiModel(model.id);
+                    setPerformance(null);
+                    setRuntime(null);
+                  }}
+                />
+                <span>
+                  <strong>{model.label}</strong>
+                  <small className="ai-model-name">
+                    {model.name} · {model.id === "modnet"
+                      ? `up to ${model.inputSize} px`
+                      : `${model.inputSize} × ${model.inputSize}`}
+                  </small>
+                  <small>{model.description}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+          <p className="background-mode-help" id={`${modelGroupId}-help`}>
+            All models run locally. Try each in live preview on your booth computer;
+            a larger model may handle edges differently but is not always better.
+            Save adjustments to use your choice in the kiosk.
+          </p>
+        </fieldset>
+      )}
+      {backgroundMode === "ai" && (
+        <fieldset
+          className="background-mode-field ai-acceleration-field"
+          aria-describedby={`${accelerationGroupId}-help`}
+          disabled={busy}
+        >
+          <legend>AI acceleration</legend>
+          <div className="background-mode-options">
+            {AI_ACCELERATIONS.map((acceleration) => (
+              <label className="background-mode-option" key={acceleration.id}>
+                <input
+                  type="radio"
+                  name={accelerationGroupId}
+                  value={acceleration.id}
+                  checked={aiAcceleration === acceleration.id}
+                  onChange={() => {
+                    setAiAcceleration(acceleration.id);
+                    setPerformance(null);
+                    setRuntime(null);
+                  }}
+                />
+                <span>
+                  <strong>{acceleration.label}</strong>
+                  <small>{acceleration.description}</small>
+                </span>
+              </label>
+            ))}
+          </div>
+          <p className="background-mode-help" id={`${accelerationGroupId}-help`}>
+            Auto tries GPU first and falls back to CPU. GPU mode reports an error if
+            acceleration is unavailable. The comparison shows which device actually ran.
+          </p>
+        </fieldset>
+      )}
       {preview && (
         <div className="chroma-inline-preview">
           <LivePreview
-            settings={{ ...settings, chroma }}
-            background={background}
+            settings={{ ...settings, backgroundMode, aiModel, aiAcceleration, chroma: draftChroma }}
+            background={backgroundMode === "off" ? undefined : background}
+            onPerformanceChange={recordPerformance}
+            onRuntimeChange={recordRuntime}
           />
-          <p>Every adjustment appears live. Save when the edges look right.</p>
+          <p>Preview your changes, then save when the scene looks right.</p>
         </div>
       )}
-      <div className="chroma-sliders">
-        {[
-          {
-            key: "similarity" as const,
-            label: "Color similarity",
-            hint: "How much green to remove",
-            min: 0.1,
-            max: 0.8,
-          },
-          {
-            key: "smoothness" as const,
-            label: "Edge softness",
-            hint: "A softer, more natural outline",
-            min: 0.01,
-            max: 0.4,
-          },
-          {
-            key: "spill" as const,
-            label: "Spill reduction",
-            hint: "Remove green from the edges",
-            min: 0,
-            max: 1,
-          },
-        ].map((item) => (
-          <label className="slider-field" key={item.key}>
-            <span>
-              {item.label}
-              <strong>{Math.round(chroma[item.key] * 100)}%</strong>
+      {backgroundMode === "ai" && (
+        <section className="ai-benchmark" aria-labelledby={`${modelGroupId}-benchmark`}>
+          <div className="ai-benchmark-heading">
+            <h3 id={`${modelGroupId}-benchmark`}>Compare on this computer</h3>
+            <span aria-live="polite">
+              {!preview
+                ? "Open live preview to measure"
+                : !performance || performance.samples < 5
+                  ? "Waiting for camera and warm-up frames…"
+                  : "Measuring live preview"}
             </span>
-            <input
-              type="range"
-              min={item.min}
-              max={item.max}
-              step="0.01"
-              value={chroma[item.key]}
-              onChange={(e) =>
-                setChroma({ ...chroma, [item.key]: Number(e.target.value) })
-              }
-            />
-            <small>{item.hint}</small>
-          </label>
-        ))}
-      </div>
+          </div>
+          {preview && runtime && (
+            <div className="ai-runtime-status" role="status">
+              <strong>Running on {runtime.label}</strong>
+              {runtime.fallbackReason && <span>{runtime.fallbackReason}</span>}
+            </div>
+          )}
+          <div className="ai-benchmark-table-wrap">
+            <table className="ai-benchmark-table">
+              <caption className="sr-only">Most recent preview measurements by model, requested acceleration, and actual device</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Model</th>
+                  <th scope="col">Selected</th>
+                  <th scope="col">Actual device</th>
+                  <th scope="col">Average frame</th>
+                  <th scope="col">95th percentile</th>
+                  <th scope="col">Preview FPS</th>
+                  <th scope="col">Frames</th>
+                </tr>
+              </thead>
+              <tbody>
+                {comparisonRows.map(([key, measured]) => {
+                  const model = AI_MODELS.find((item) => item.id === measured.model)!;
+                  const current = preview && performance !== null &&
+                    previewPerformanceKey(performance) === key && performance.samples >= 5;
+                  return (
+                    <tr key={key} className={current ? "measuring" : ""}>
+                      <th scope="row">
+                        {model.label}
+                        {current && <small>Live</small>}
+                      </th>
+                      <td>{AI_ACCELERATIONS.find((item) => item.id === measured.acceleration)!.label}</td>
+                      <td>{measured.runtime.label}</td>
+                      <td>{`${measured.averageMs.toFixed(1)} ms`}</td>
+                      <td>{`${measured.p95Ms.toFixed(1)} ms`}</td>
+                      <td>{measured.fps.toFixed(1)}</td>
+                      <td>{measured.samples}</td>
+                    </tr>
+                  );
+                })}
+                {!hasActiveMeasurement && (preview || !hasSelectedMeasurement) && (
+                  <tr>
+                    <th scope="row">{AI_MODELS.find((item) => item.id === aiModel)!.label}</th>
+                    <td>{AI_ACCELERATIONS.find((item) => item.id === aiAcceleration)!.label}</td>
+                    <td>{runtime?.label ?? "Waiting for preview"}</td>
+                    <td>—</td><td>—</td><td>—</td><td>—</td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+          <p>
+            Frame times include AI and background compositing; lower is faster.
+            Preview is capped at 12 FPS, and Canon supplies about one frame per second,
+            so compare processing times as well as the picture.
+            Keep the same camera, lighting, and pose for each model and acceleration setting.
+            Compare before saving; these measurements aren’t saved.
+          </p>
+        </section>
+      )}
+      {backgroundMode === "green-screen" && (
+        <div className="chroma-sliders">
+          {[
+            {
+              key: "similarity" as const,
+              label: "Color similarity",
+              hint: "How much green to remove",
+              min: 0.1,
+              max: 0.8,
+            },
+            {
+              key: "smoothness" as const,
+              label: "Edge softness",
+              hint: "A softer, more natural outline",
+              min: 0.01,
+              max: 0.4,
+            },
+            {
+              key: "spill" as const,
+              label: "Spill reduction",
+              hint: "Remove green from the edges",
+              min: 0,
+              max: 1,
+            },
+          ].map((item) => (
+            <label className="slider-field" key={item.key}>
+              <span>
+                {item.label}
+                <strong>{Math.round(chroma[item.key] * 100)}%</strong>
+              </span>
+              <input
+                type="range"
+                min={item.min}
+                max={item.max}
+                step="0.01"
+                value={chroma[item.key]}
+                onChange={(e) =>
+                  setChroma({ ...chroma, [item.key]: Number(e.target.value) })
+                }
+              />
+              <small>{item.hint}</small>
+            </label>
+          ))}
+        </div>
+      )}
       <div className="panel-footer">
         <span className="field-hint">
-          Even lighting makes all the difference.
+          {backgroundMode === "off"
+            ? "Your scene, just as it is."
+            : "Even lighting makes all the difference."}
         </span>
         <div>
           <button
             className="button light small"
-            onClick={() => setPreview(!preview)}
+            onClick={() => {
+              setPreview(!preview);
+              setPerformance(null);
+              setRuntime(null);
+            }}
           >
             {preview ? "Close live preview" : "Open live preview"}
             <Expand size={14} />
@@ -140,7 +375,7 @@ export function ChromaSettings({
           <button
             className="button dark small"
             disabled={busy}
-            onClick={() => onSave({ chroma })}
+            onClick={() => onSave({ backgroundMode, aiModel, aiAcceleration, chroma: draftChroma })}
           >
             Save adjustments
             <Check size={14} />
@@ -410,8 +645,11 @@ export function CameraSettings({
         <div className="preview-tip">
           <Sparkles size={17} />
           <p>
-            Give your guests a little room to move. Keep your green screen
-            smooth and evenly lit.
+            {settings.backgroundMode === "green-screen"
+              ? "Give your guests a little room to move. Keep your green screen smooth and evenly lit."
+              : settings.backgroundMode === "ai"
+                ? "Keep guests close to the camera in even light so AI can find their outline."
+                : "Give your guests a little room to move and check the scene behind them."}
           </p>
         </div>
         {preview && (
@@ -788,6 +1026,9 @@ export function SessionModal({
           {session.photos.map((photo, i) => (
             <div key={photo}>
               <img src={photo} alt={`Photo ${i + 1} of 3`} />
+              {session.backgroundNames?.[i] && (
+                <p className="detail-photo-background">{session.backgroundNames[i]}</p>
+              )}
               <a
                 className="button light small"
                 href={photo}

@@ -1,0 +1,23 @@
+MediaPipe Selfie Segmenter (square), float16, version 1
+Authors: Tingbo Hou, Siargey Pisarchyk, Karthik Raveendran (Google).
+License: Apache License 2.0 (see LICENSE.txt in this directory).
+
+Original, unmodified model:
+https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/1/selfie_segmenter.tflite
+SHA-256: 191ac9529ae506ee0beefa6b2c945a172dab9d07d1e802a290a4e4038226658b
+
+Official model card (specification, license, intended uses, and limitations):
+https://storage.googleapis.com/mediapipe-assets/Model%20Card%20MediaPipe%20Selfie%20Segmentation.pdf
+Official task documentation:
+https://developers.google.com/edge/mediapipe/solutions/vision/image_segmenter
+
+Input: 256 x 256 RGB. Output: 256 x 256 person confidence.
+The model is designed for prominent people at a similar distance from the camera.
+Fine hair/fingers, low light, motion, distant people, and differently sized groups
+may reduce mask quality. It is not a general object-background remover.
+
+Runtime: @mediapipe/tasks-vision 1.1.1, Apache License 2.0.
+The package's unmodified JavaScript and Wasm runtime are copied from node_modules
+to public/vendor/mediapipe by scripts/prepare-person-segmentation.mjs at install,
+development start, and build. Camera images never leave the local browser for AI
+processing; the app serves every AI asset locally and does not use a CDN.

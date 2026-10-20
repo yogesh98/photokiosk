@@ -1,7 +1,19 @@
+import { DEFAULT_AI_ACCELERATION, DEFAULT_AI_MODEL, type AiAcceleration, type AiModelId } from "./ai-models";
+
 export type CameraMode = "browser" | "canon";
+export type BackgroundMode = "green-screen" | "ai" | "off";
+export type BackgroundSequenceMode = "single" | "rotate" | "custom";
+export interface BackgroundSequence {
+  mode: BackgroundSequenceMode;
+  photoIds: [string, string, string];
+}
 export interface KioskSettings {
   eventName: string;
   activeBackgroundId: string;
+  backgroundMode: BackgroundMode;
+  backgroundSequence: BackgroundSequence;
+  aiModel: AiModelId;
+  aiAcceleration: AiAcceleration;
   camera: {
     mode: CameraMode;
     deviceId: string;
@@ -38,6 +50,7 @@ export interface PhotoSession {
   email: string | null;
   status: "captured" | "sending" | "sent" | "failed";
   backgroundName: string;
+  backgroundNames?: [string, string, string];
   error?: string;
   deliveries?: Array<{
     email: string;
@@ -54,6 +67,10 @@ export interface StudioData {
 export const DEFAULT_SETTINGS: KioskSettings = {
   eventName: "The good times",
   activeBackgroundId: "coast",
+  backgroundMode: "green-screen",
+  backgroundSequence: { mode: "single", photoIds: ["coast", "coast", "coast"] },
+  aiModel: DEFAULT_AI_MODEL,
+  aiAcceleration: DEFAULT_AI_ACCELERATION,
   camera: {
     mode: "browser",
     deviceId: "",

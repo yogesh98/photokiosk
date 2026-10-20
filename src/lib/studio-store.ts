@@ -10,9 +10,12 @@ import {
 import path from "node:path";
 import sharp from "sharp";
 import { unstable_rethrow } from "next/navigation";
+import { DEFAULT_AI_ACCELERATION, DEFAULT_AI_MODEL, isAiAcceleration, isAiModelId } from "./ai-models";
+import { isBackgroundSequence } from "./background-sequence";
 import {
   DEFAULT_SETTINGS,
   type Background,
+  type BackgroundMode,
   type KioskSettings,
   type PhotoSession,
   type StudioData,
@@ -52,6 +55,10 @@ const BUILTINS: Background[] = [
   url: `/backgrounds/${id}.jpg`,
   createdAt: BUILTIN_DATE,
 }));
+
+function isBackgroundMode(value: unknown): value is BackgroundMode {
+  return value === "green-screen" || value === "ai" || value === "off";
+}
 
 export function dataDirectory() {
   return path.resolve(
@@ -109,6 +116,14 @@ async function withStore<T>(
       if (
         state.version !== 1 ||
         !state.settings ||
+        (state.settings.backgroundMode !== undefined &&
+          !isBackgroundMode(state.settings.backgroundMode)) ||
+        (state.settings.aiModel !== undefined &&
+          !isAiModelId(state.settings.aiModel)) ||
+        (state.settings.aiAcceleration !== undefined &&
+          !isAiAcceleration(state.settings.aiAcceleration)) ||
+        (state.settings.backgroundSequence !== undefined &&
+          !isBackgroundSequence(state.settings.backgroundSequence)) ||
         !Array.isArray(state.backgrounds) ||
         !Array.isArray(state.sessions)
       ) {
@@ -127,6 +142,32 @@ async function withStore<T>(
         sessions: [],
         gmailAppPassword: "",
       };
+      changed = true;
+    }
+    // Older booths stored only the green screen toggle. Preserve their choice.
+    if (state.settings.backgroundMode === undefined) {
+      state.settings.backgroundMode = state.settings.chroma.enabled
+        ? "green-screen"
+        : "off";
+      changed = true;
+    }
+    // Earlier AI booths used the fast Selfie Segmenter model exclusively.
+    if (state.settings.aiModel === undefined) {
+      state.settings.aiModel = DEFAULT_AI_MODEL;
+      changed = true;
+    }
+    if (state.settings.aiAcceleration === undefined) {
+      state.settings.aiAcceleration = DEFAULT_AI_ACCELERATION;
+      changed = true;
+    }
+    if (state.settings.backgroundSequence === undefined) {
+      const id = state.settings.activeBackgroundId;
+      state.settings.backgroundSequence = { mode: "single", photoIds: [id, id, id] };
+      changed = true;
+    }
+    const chromaEnabled = state.settings.backgroundMode === "green-screen";
+    if (state.settings.chroma.enabled !== chromaEnabled) {
+      state.settings.chroma.enabled = chromaEnabled;
       changed = true;
     }
     if (!lock.initialized) {
@@ -228,6 +269,13 @@ export async function updateSettings(input: unknown): Promise<KioskSettings> {
         throw new StudioError("Choose an existing background.");
       settings.activeBackgroundId = id;
     }
+    if ("backgroundSequence" in patch) {
+      if (!isBackgroundSequence(patch.backgroundSequence))
+        throw new StudioError("Choose a background sequence mode and exactly three background IDs.");
+      if (!patch.backgroundSequence.photoIds.every((id) => state.backgrounds.some((background) => background.id === id)))
+        throw new StudioError("Choose an existing background for every photo.");
+      settings.backgroundSequence = structuredClone(patch.backgroundSequence);
+    }
     if ("camera" in patch) {
       const camera = record(patch.camera, "Camera");
       if ("mode" in camera) {
@@ -252,10 +300,32 @@ export async function updateSettings(input: unknown): Promise<KioskSettings> {
     }
     if ("chroma" in patch) {
       const chroma = record(patch.chroma, "Green screen");
-      if ("enabled" in chroma)
-        settings.chroma.enabled = bool(chroma.enabled, "Green screen");
+      if ("enabled" in chroma) {
+        settings.backgroundMode = bool(chroma.enabled, "Green screen")
+          ? "green-screen"
+          : "off";
+      }
       for (const key of ["similarity", "smoothness", "spill"] as const)
         if (key in chroma) settings.chroma[key] = unit(chroma[key], key);
+    }
+    // The explicit mode wins over the legacy toggle when both are submitted.
+    if ("backgroundMode" in patch) {
+      if (!isBackgroundMode(patch.backgroundMode))
+        throw new StudioError(
+          "Choose green screen, AI, or original background mode.",
+        );
+      settings.backgroundMode = patch.backgroundMode;
+    }
+    settings.chroma.enabled = settings.backgroundMode === "green-screen";
+    if ("aiModel" in patch) {
+      if (!isAiModelId(patch.aiModel))
+        throw new StudioError("Choose an available AI model.");
+      settings.aiModel = patch.aiModel;
+    }
+    if ("aiAcceleration" in patch) {
+      if (!isAiAcceleration(patch.aiAcceleration))
+        throw new StudioError("Choose Auto, CPU, or GPU acceleration.");
+      settings.aiAcceleration = patch.aiAcceleration;
     }
     if ("gmail" in patch) {
       const gmail = record(patch.gmail, "Gmail");
@@ -372,6 +442,9 @@ export async function deleteBackground(id: string) {
     state.backgrounds = state.backgrounds.filter((item) => item.id !== id);
     if (state.settings.activeBackgroundId === id)
       state.settings.activeBackgroundId = "coast";
+    state.settings.backgroundSequence.photoIds = state.settings.backgroundSequence.photoIds.map(
+      (photoId) => photoId === id ? state.settings.activeBackgroundId : photoId,
+    ) as [string, string, string];
     return { success: true, settings: publicSettings(state) };
   }, true);
   // Commit the deletion before removing pixels so a failed state write keeps the old background usable.
@@ -416,6 +489,12 @@ export async function createSession(input: unknown): Promise<PhotoSession> {
     80,
     false,
   );
+  let backgroundNames: [string, string, string] | undefined;
+  if ("backgroundNames" in body) {
+    if (!Array.isArray(body.backgroundNames) || body.backgroundNames.length !== 3)
+      throw new StudioError("Include exactly three background names.");
+    backgroundNames = body.backgroundNames.map((name) => text(name, "Background name", 80, false)) as [string, string, string];
+  }
   const photos = await Promise.all(
     body.photos.map((photo) => normalizeImage(decodePhoto(photo), 3000)),
   );
@@ -444,6 +523,7 @@ export async function createSession(input: unknown): Promise<PhotoSession> {
       email: null,
       status: "captured",
       backgroundName,
+      ...(backgroundNames ? { backgroundNames } : {}),
     };
     try {
       for (let index = 0; index < photos.length; index++)

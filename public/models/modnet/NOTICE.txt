@@ -1,0 +1,32 @@
+MODNet: Trimap-Free Portrait Matting in Real Time
+Authors: Zhanghan Ke, Kaican Li, Yurou Zhou, Qiuhua Wu, Xiaoyan Mao,
+Qiong Yan, Rynson W. H. Lau. License: Apache License 2.0 (see LICENSE.txt).
+Original research and model: https://github.com/ZHKKKe/MODNet
+
+Unmodified float32 ONNX export by Xenova / Transformers.js:
+https://huggingface.co/Xenova/modnet
+Pinned repository revision: fa2fa546052fba4c08921230a26cc69a333fca12
+Model download:
+https://huggingface.co/Xenova/modnet/resolve/fa2fa546052fba4c08921230a26cc69a333fca12/onnx/model.onnx
+SHA-256: 07c308cf0fc7e6e8b2065a12ed7fc07e1de8febb7dc7839d7b7f15dd66584df9
+Size: 25,888,640 bytes.
+The adjacent preprocessor_config.json is copied from this same pinned revision.
+
+Input tensor 'input': RGB float32 [1,3,H,W]. Normalize each color with
+(value / 255 - 0.5) / 0.5. H and W must be divisible by 32.
+Output tensor 'output': float32 alpha matte [1,1,H,W], already in [0,1].
+The application preserves opacity detail instead of thresholding this matte.
+For bounded mini-PC CPU cost, we resize the longest input edge to 512 and round
+the other edge to a multiple of 32, then map the mask back to the full photo.
+This is smaller than the reference processor's shortest-edge=512 setting and
+can reduce fine detail; it avoids arbitrary distortion to a square and caps
+inference at 512x512. No image cropping is performed.
+MODNet targets portraits; complex scenes, motion blur, fine accessories and
+unusual poses can still produce mistakes. Compare actual kiosk captures.
+
+Runtime: onnxruntime-web 1.30.0, MIT (see ONNXRUNTIME-LICENSE.txt).
+The CPU-only Wasm runtime is copied locally from the pinned npm package into
+public/vendor/onnxruntime at install/dev/build time. numThreads=1 avoids requiring
+cross-origin isolation, SharedArrayBuffer or GPU support. There is no CDN or
+remote inference request. The model and Wasm runtime work in a current Ubuntu
+Chrome/Chromium browser; actual mini-PC latency must be measured on that device.

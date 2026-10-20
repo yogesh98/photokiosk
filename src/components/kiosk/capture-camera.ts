@@ -1,5 +1,5 @@
 /** Wait for live view to release the camera, while allowing the guest to cancel. */
-async function waitForPreview(
+export async function waitForPreview(
   preview: Promise<unknown> | null,
   signal: AbortSignal,
 ): Promise<void> {

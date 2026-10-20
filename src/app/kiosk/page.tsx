@@ -31,13 +31,16 @@ import {
   X,
 } from "lucide-react";
 import type { PhotoSession, StudioData } from "@/lib/kiosk-types";
+import { resolveSessionBackgrounds } from "@/lib/background-sequence";
 import {
   LivePreview,
   type PreviewStatus,
 } from "@/components/kiosk/live-preview";
 import {
   runCaptureSequence,
+  waitForCaptureScene,
   type CapturePhoto,
+  type CaptureReadiness,
 } from "@/components/kiosk/capture-sequence";
 import "./kiosk.css";
 
@@ -77,6 +80,7 @@ export default function KioskPage() {
   });
   const [countdown, setCountdown] = useState(5);
   const [photoNumber, setPhotoNumber] = useState(1);
+  const [preparingPhoto, setPreparingPhoto] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
   const [selectedPhoto, setSelectedPhoto] = useState(0);
   const [session, setSession] = useState<PhotoSession | null>(null);
@@ -85,7 +89,9 @@ export default function KioskPage() {
   const [error, setError] = useState<string | null>(null);
   const [flash, setFlash] = useState(false);
   const [resetIn, setResetIn] = useState(20);
-  const captureRef = useRef<CapturePhoto | null>(null);
+  const captureRef = useRef<CaptureReadiness>({ capture: null });
+  const cameraErrorRef = useRef<string | null>(null);
+  const sessionBackgroundNamesRef = useRef<[string, string, string]>(["Original background", "Original background", "Original background"]);
   const flowAbortRef = useRef<AbortController | null>(null);
   const settingsAbortRef = useRef<AbortController | null>(null);
   const requestIdRef = useRef("");
@@ -148,7 +154,7 @@ export default function KioskPage() {
   const reset = useCallback(() => {
     flowAbortRef.current?.abort();
     flowAbortRef.current = null;
-    captureRef.current = null;
+    captureRef.current = { capture: null };
     setSettingsRefreshing(true);
     setLoadingError(null);
     setStage("idle");
@@ -156,6 +162,7 @@ export default function KioskPage() {
     setSession(null);
     setSelectedPhoto(0);
     setPhotoNumber(1);
+    setPreparingPhoto(false);
     setCountdown(5);
     setEmail("");
     setSentAddress("");
@@ -177,14 +184,19 @@ export default function KioskPage() {
     };
   }, [stage, reset]);
 
-  const onCaptureReady = useCallback((capture: CapturePhoto | null) => {
-    captureRef.current = capture;
+  const plannedBackgrounds = studio
+    ? resolveSessionBackgrounds(studio.settings, studio.backgrounds)
+    : [undefined, undefined, undefined];
+  const background = plannedBackgrounds[photoNumber - 1];
+  const onCaptureReady = useCallback((capture: CapturePhoto | null, backgroundUrl?: string) => {
+    captureRef.current = { capture, backgroundUrl };
   }, []);
-  const background = studio?.backgrounds.find(
-    (item) => item.id === studio.settings.activeBackgroundId,
-  );
+  const onCameraStatus = useCallback((status: PreviewStatus) => {
+    cameraErrorRef.current = status.error;
+    setCameraStatus(status);
+  }, []);
   const needsBackground = Boolean(
-    studio?.settings.chroma.enabled && !background,
+    studio && studio.settings.backgroundMode !== "off" && plannedBackgrounds.some((item) => !item),
   );
 
   async function savePhotos(capturedPhotos: string[], signal?: AbortSignal) {
@@ -202,7 +214,9 @@ export default function KioskPage() {
         "/api/sessions",
         {
           photos: capturedPhotos,
-          backgroundName: background?.name || "Original background",
+          backgroundName: new Set(sessionBackgroundNamesRef.current).size === 1
+            ? sessionBackgroundNamesRef.current[0] : "Mixed backgrounds",
+          backgroundNames: sessionBackgroundNamesRef.current,
           requestId: requestIdRef.current,
         },
         signal,
@@ -220,8 +234,7 @@ export default function KioskPage() {
   }
 
   async function startCapture() {
-    const capture = captureRef.current;
-    if (!capture || needsBackground || settingsRefreshing || stage !== "idle")
+    if (!captureRef.current.capture || needsBackground || settingsRefreshing || stage !== "idle")
       return;
     // Freeze the selected camera and scene until this guest finishes.
     settingsAbortRef.current?.abort();
@@ -229,14 +242,29 @@ export default function KioskPage() {
     flowAbortRef.current?.abort();
     flowAbortRef.current = controller;
     requestIdRef.current = crypto.randomUUID();
+    sessionBackgroundNamesRef.current = plannedBackgrounds.map((item) => item?.name || "Original background") as [string, string, string];
     setPhotos([]);
     setSession(null);
     setError(null);
     setStage("capturing");
+    let preparedCapture: CapturePhoto | null = null;
     try {
       const capturedPhotos = await runCaptureSequence({
         signal: controller.signal,
-        capture,
+        preparePhoto: async (number, signal) => {
+          setPhotoNumber(number);
+          setPreparingPhoto(true);
+          preparedCapture = await waitForCaptureScene(
+            () => ({ ...captureRef.current, error: cameraErrorRef.current }),
+            plannedBackgrounds[number - 1]?.url,
+            signal,
+          );
+          setPreparingPhoto(false);
+        },
+        capture: (signal) => {
+          if (!preparedCapture) throw new Error("Please wait for the next scene to load.");
+          return preparedCapture(signal);
+        },
         onCountdown: (seconds, number) => {
           setCountdown(seconds);
           setPhotoNumber(number);
@@ -252,6 +280,8 @@ export default function KioskPage() {
     } catch (error) {
       if (controller.signal.aborted) return;
       setStage("idle");
+      setPhotoNumber(1);
+      setPreparingPhoto(false);
       setPhotos([]);
       setError(
         error instanceof Error
@@ -416,7 +446,9 @@ export default function KioskPage() {
               {reviewing
                 ? "Three little moments. One very good memory."
                 : isCapturing
-                  ? countdown === 0
+                  ? preparingPhoto
+                    ? "Setting the scene for your next photo…"
+                    : countdown === 0
                     ? "Perfect. Hold that thought…"
                     : "Get comfortable, look into the camera, and be yourself."
                   : "Step into the frame. Be yourself. We’ll do the rest."}
@@ -433,7 +465,7 @@ export default function KioskPage() {
                   background={background}
                   enabled={!reviewing && !settingsRefreshing}
                   onCaptureReady={onCaptureReady}
-                  onStatusChange={setCameraStatus}
+                  onStatusChange={onCameraStatus}
                 />
                 {reviewing && photos[selectedPhoto] && (
                   <img
@@ -467,10 +499,10 @@ export default function KioskPage() {
                       PHOTO {photoNumber} OF 3
                     </span>
                     <strong key={`${photoNumber}-${countdown}`}>
-                      {countdown || <Camera size={63} strokeWidth={1.2} />}
+                      {preparingPhoto ? <LoaderCircle size={48} className="still-camera-spinner" /> : countdown || <Camera size={63} strokeWidth={1.2} />}
                     </strong>
                     <span>
-                      {countdown
+                      {preparingPhoto ? "Getting your background ready" : countdown
                         ? photoNumber === 1
                           ? "Find your good side"
                           : "A fresh pose, a new memory"

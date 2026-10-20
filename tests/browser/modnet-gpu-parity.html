@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portrait CPU / GPU parity check</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 32px auto; padding: 0 20px; max-width: 1000px; color: #18201a; background: #f6f7f5; }
+  h1 { font-size: 26px; } button, input { font: inherit; margin: 8px 12px 8px 0; }
+  button { padding: 8px 18px; } #status { white-space: pre-wrap; }
+  article { background: white; border: 1px solid #ccd1cb; padding: 18px; margin: 18px 0; border-radius: 8px; }
+  h2 { margin: 0; font-size: 19px; } .pass { color: #17612e; } .fail { color: #a31c20; }
+  .mattes { display: flex; gap: 16px; flex-wrap: wrap; } figure { margin: 0; }
+  canvas { display: block; max-width: 100%; width: 320px; height: auto; background: #111; }
+  figcaption { margin-top: 6px; font-size: 14px; }
+</style>
+<h1>Portrait CPU / GPU parity check</h1>
+<p>Select a portrait with a clearly visible person. This checks the real bundled model and worker on identical frozen frames. The image stays in memory and is not saved.</p>
+<p>Pass limits: mean absolute alpha error ≤ 0.001 and foreground overlap (IoU at alpha 0.5) ≥ 0.99. Black is background; white is foreground.</p>
+<label>Portrait image <input id="portrait" type="file" accept="image/*"></label>
+<button id="run" type="button">Run comparison</button>
+<p id="status" role="status" aria-live="polite">Choose an image, then run the comparison.</p>
+<div id="results"></div>
+<script type="module">
+const picker = document.querySelector('#portrait');
+const button = document.querySelector('#run');
+const status = document.querySelector('#status');
+const results = document.querySelector('#results');
+const cases = [[512, 352], [512, 512], [352, 512], [512, 352], [512, 352], [512, 352]];
+const clients = new Set();
+
+function workerClient() {
+  const worker = new Worker('/workers/person-segmentation.worker.js', { type: 'module' });
+  let pending;
+  let nextId = 0;
+  const settle = (error, value) => {
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    const { resolve, reject } = pending;
+    pending = undefined;
+    if (error) reject(error); else resolve(value);
+  };
+  worker.onmessage = ({ data }) => {
+    if (!pending) return;
+    if (data.type === 'error') settle(new Error(data.message || 'Worker inference failed.'));
+    else if (data.type === pending.type && (pending.id === undefined || data.id === pending.id)) settle(null, data);
+  };
+  worker.onerror = (event) => settle(new Error(event.message || 'Worker crashed.'));
+  worker.onmessageerror = () => settle(new Error('Could not read the worker response.'));
+  const request = (data, type, transfer = []) => new Promise((resolve, reject) => {
+    if (pending) return reject(new Error('An inference is already running.'));
+    pending = { resolve, reject, type, id: data.id,
+      timer: setTimeout(() => settle(new Error('Worker response exceeded 60 seconds.')), 60_000) };
+    try { worker.postMessage(data, transfer); } catch (error) { settle(error); }
+  });
+  const client = {
+    initialize: (acceleration) => request({ type: 'initialize', model: 'modnet', acceleration }, 'ready'),
+    async segment(frame) {
+      const bitmap = await createImageBitmap(frame);
+      try { return await request({ type: 'segment', id: ++nextId, bitmap }, 'result', [bitmap]); }
+      finally { bitmap.close(); }
+    },
+    close() {
+      worker.terminate();
+      settle(new Error('Worker was closed.'));
+      clients.delete(client);
+    },
+  };
+  clients.add(client);
+  return client;
+}
+
+function readAlpha(result, width, height) {
+  if (result.kind !== 'alpha' || result.width !== width || result.height !== height ||
+      !(result.confidence instanceof ArrayBuffer) || result.confidence.byteLength !== width * height * 4) {
+    throw new Error('Worker returned an invalid alpha shape.');
+  }
+  const alpha = new Float32Array(result.confidence);
+  if (alpha.some((value) => !Number.isFinite(value) || value < 0 || value > 1)) throw new Error('Worker returned invalid alpha values.');
+  return alpha;
+}
+
+function matteFigure(alpha, width, height, label) {
+  const figure = document.createElement('figure');
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  const pixels = context.createImageData(width, height);
+  for (let i = 0; i < alpha.length; i++) {
+    const value = Math.round(alpha[i] * 255);
+    pixels.data.set([value, value, value, 255], i * 4);
+  }
+  context.putImageData(pixels, 0, 0);
+  const caption = document.createElement('figcaption');
+  caption.textContent = label;
+  figure.append(canvas, caption);
+  return figure;
+}
+
+button.addEventListener('click', async () => {
+  const file = picker.files[0];
+  if (!file) { status.textContent = 'Choose a portrait image first.'; return; }
+  button.disabled = picker.disabled = true;
+  results.replaceChildren();
+  status.className = '';
+  let image;
+  let cpu;
+  let gpu;
+  try {
+    image = await createImageBitmap(file);
+    cpu = workerClient();
+    gpu = workerClient();
+    status.textContent = 'Loading CPU model…';
+    await cpu.initialize('cpu');
+    status.textContent = 'Loading GPU model…';
+    const ready = await gpu.initialize('gpu');
+    if (ready.runtime.backend !== 'onnx-webgpu') throw new Error('This check requires browser WebGPU; the selected backend was ' + ready.runtime.label + '.');
+    let passed = 0;
+    for (const [index, [width, height]] of cases.entries()) {
+      status.textContent = `Checking ${index + 1}/${cases.length}: ${width} × ${height} (${ready.runtime.label})…`;
+      const frame = document.createElement('canvas');
+      frame.width = width;
+      frame.height = height;
+      const scale = Math.max(width / image.width, height / image.height);
+      frame.getContext('2d').drawImage(image, (width - image.width * scale) / 2, (height - image.height * scale) / 2, image.width * scale, image.height * scale);
+      // Both workers receive copies of this same immutable frame, sequentially.
+      const cpuResult = await cpu.segment(frame);
+      const gpuResult = await gpu.segment(frame);
+      const baseline = readAlpha(cpuResult, width, height);
+      const actual = readAlpha(gpuResult, width, height);
+      let absoluteError = 0;
+      let intersection = 0;
+      let union = 0;
+      for (let i = 0; i < baseline.length; i++) {
+        absoluteError += Math.abs(baseline[i] - actual[i]);
+        const a = baseline[i] >= 0.5, b = actual[i] >= 0.5;
+        if (a && b) intersection++;
+        if (a || b) union++;
+      }
+      const mae = absoluteError / baseline.length;
+      const iou = union ? intersection / union : 1;
+      const pass = mae <= 0.001 && iou >= 0.99;
+      if (pass) passed++;
+      const article = document.createElement('article');
+      const heading = document.createElement('h2');
+      heading.className = pass ? 'pass' : 'fail';
+      heading.textContent = `${pass ? 'PASS' : 'FAIL'} — ${index + 1}: ${width} × ${height}${index >= 3 ? `, repeat ${index - 2}` : ''}`;
+      const metrics = document.createElement('p');
+      metrics.textContent = `Mean absolute error: ${mae.toExponential(5)} · IoU: ${iou.toFixed(6)}`;
+      const mattes = document.createElement('div');
+      mattes.className = 'mattes';
+      mattes.append(matteFigure(baseline, width, height, cpuResult.runtime.label), matteFigure(actual, width, height, gpuResult.runtime.label));
+      article.append(heading, metrics, mattes);
+      results.append(article);
+    }
+    status.className = passed === cases.length ? 'pass' : 'fail';
+    status.textContent = `${passed === cases.length ? 'PASS' : 'FAIL'}: ${passed}/${cases.length} comparisons met both limits. GPU runtime: ${ready.runtime.label}.`;
+  } catch (error) {
+    status.className = 'fail';
+    status.textContent = `ERROR: ${error.message || String(error)}`;
+  } finally {
+    cpu?.close();
+    gpu?.close();
+    image?.close();
+    button.disabled = picker.disabled = false;
+  }
+});
+window.addEventListener('pagehide', () => { for (const client of clients) client.close(); });
+</script>
+</html>

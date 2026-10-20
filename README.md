@@ -1,8 +1,8 @@
 # Still · Photo kiosk studio
 
-A local photo booth for a green screen and a USB camera. Built with Next.js 16, React, and TypeScript.
+A local photo booth with green-screen or on-device AI background replacement and a USB camera. Built with Next.js 16, React, and TypeScript.
 
-- **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, green-screen tuning, camera settings, Gmail, and the gallery with recipients and delivery history.
+- **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, background replacement, camera settings, Gmail, and the gallery with recipients and delivery history.
 - **Kiosk:** [http://127.0.0.1:3000/kiosk](http://127.0.0.1:3000/kiosk). Live background replacement, a five-second countdown, three photos with three-second intervals, review/retake, and email entry after capture.
 
 ## Run
@@ -26,12 +26,77 @@ Dev and production bind to `127.0.0.1`. Open the kiosk in a second browser windo
 ## Set up the booth
 
 1. In **Camera setup**, choose a webcam or **Canon tethering**. Save the selection, then open the preview. A webcam needs browser camera permission on localhost.
-2. Choose one of six built-in backgrounds, or upload a JPEG, PNG, or WebP up to 10 MB. Set up an evenly lit green screen behind the guests.
-3. Under **Green screen magic**, open the live preview and adjust color similarity, edge softness, and spill reduction. Changes appear immediately in this preview; save to apply them to the kiosk.
+2. Choose one of six built-in backgrounds, or upload a JPEG, PNG, or WebP up to 10 MB. Under **Backgrounds for each photo**, keep the **Same background**, **Rotate backgrounds** through the library starting with the active scene, or **Choose per photo** to assign scenes to photos 1, 2, and 3. Save the photo backgrounds to apply the plan to the next session.
+3. Under **Background replacement**, choose **Green screen**, **AI people**, or **Off**. Green screen uses a physical green backdrop and offers color similarity, edge softness, and spill reduction controls. AI people removes the scene behind people without a green screen. Off keeps the camera's original scene. Open the live preview to check the result, then **Save adjustments** to apply it to the kiosk.
 4. In **Email delivery**, enter the sender address, display name, and a Google app password. Customize the subject/message, save, then send a test to an address you control.
 5. Launch the kiosk. Guests have five seconds before photo one, then three seconds between each remaining photo. Photos are saved before email is requested. Guests can retake or download if email is unavailable.
 
 The admin refreshes on focus and the gallery has a refresh button. The kiosk picks up saved settings between guests, polling every 15 seconds while idle. A reset waits for fresh settings before enabling another session. Start a fresh session to apply changes made during capture.
+
+The kiosk displays each photo's scene before starting its countdown and uses that scene in the saved photo. The camera and AI model stay loaded while backgrounds switch. The plan is fixed for the guest's session, and the gallery keeps the background name for each photo. Sequences work with both green screen and AI; Off preserves the original camera scene for all three shots.
+
+## Local AI background replacement
+
+**AI people** offers three models in **Admin → Backgrounds → AI model**. Pick one, open the live preview, then save your choice for the kiosk.
+
+| Choice | Model | What to compare | Model size |
+| --- | --- | --- | --- |
+| Fast (default) | [MediaPipe Selfie](https://developers.google.com/edge/mediapipe/solutions/vision/image_segmenter), 256 × 256 | Lightweight person segmentation; a good baseline for a mini PC. | 244 KiB |
+| Detailed | MediaPipe Selfie Multiclass, 256 × 256 | A heavier model that separates hair, skin, clothing and accessories; all person categories are retained. | 15.6 MiB |
+| Portrait | [MODNet](https://github.com/ZHKKKe/MODNet), up to 512 pixels | Portrait matting with continuous transparency for fine edges and hair. | 24.7 MiB |
+
+Inference runs locally, with no account, API key, cloud service, or dedicated GPU required. All three models are bundled locally, and matching MediaPipe/ONNX browser runtimes are copied from pinned npm dependencies during setup/build. Only the selected model/runtime loads. Camera frames remain on this computer. After dependencies are installed, AI background replacement also works without internet access. CPU inference uses WebAssembly in a browser worker and does not require cross-origin isolation headers.
+
+Use a current desktop Chrome or Edge browser for the booth. AI preview is capped at 12 frames per second and processes one frame at a time; slower machines naturally run below that cap. Every saved photo gets its own mask from its frozen, cropped and mirrored frame, with the output retaining the existing resolution (up to 2400 pixels wide). Browser webcams and Canon captures use the same processing. Green screen and Off do not load the AI model.
+
+These models are intended for people; they are not general object-background removers. Even lighting and separation from the background help. Fine hair, held props, distant people, and crowded groups can have imperfect edges; a well-lit green screen can give cleaner results. A larger model is not always better for a particular scene. Check quality and responsiveness on the actual event computer before use. If AI cannot load or process a frame, the preview shows an error and blocks capture until retry succeeds or you select another mode/model.
+
+Existing saved booths retain their previous background mode and start with the Fast AI model. Background images and green-screen tuning are retained when switching modes.
+
+### Compare models on the booth computer
+
+Open **Backgrounds**, select **AI people**, choose a model and acceleration setting, and click **Open live preview**. **Auto** tries acceleration and falls back to CPU if it cannot run. **CPU** uses the browser CPU implementation. **GPU** reports an error if acceleration fails, so a GPU benchmark cannot silently become a CPU benchmark. Existing booths start with Auto.
+
+The preview reports the active runtime and any fallback reason as soon as initialization finishes. The comparison table starts reporting after three warm-up frames and five measured frames. Switch models or acceleration while the preview is open to compare them using the same camera, background, lighting, and pose. Each model, selected acceleration, and runtime has a separate row. Previous measurements remain in the table until you save or leave the panel.
+
+Average frame time and 95th-percentile time measure AI processing plus compositing at the preview resolution, using a rolling window of up to 30 frames. Lower is faster. Preview FPS is the actual output rate, including camera delays and the 12 FPS cap; it is not the model's maximum possible speed. Canon preview is about one FPS, so use frame processing time to distinguish models on that camera. Full-resolution capture and JPEG saving can take longer than preview processing. Inspect hair, hands, props, and groups as well as the timing numbers, then **Save adjustments** to use the chosen model in the kiosk.
+
+### GPU acceleration on Intel Ubuntu and Apple Silicon
+
+Fast and Detailed use MediaPipe's browser GPU delegate when available. Portrait tries browser WebGPU, then the optional native backend below. Auto can fall back to browser CPU processing. Browser GPU support depends on the browser, graphics drivers, and model; successful initialization and processing determine availability.
+
+For native Portrait acceleration, install Python 3.11–3.14, then run this once from the project folder:
+
+```bash
+npm run setup:ai
+```
+
+This creates a project-local `.venv-ai` and installs pinned packages. It does not alter the system Python. To choose a particular Python version, run `python3.12 scripts/native-ai/setup.py` instead. To use an existing compatible environment, set `PHOTO_KIOSK_AI_PYTHON` to its Python executable when starting the app.
+
+| Computer | Native Portrait runtime | Requirements |
+| --- | --- | --- |
+| Intel Ubuntu, x86-64 | OpenVINO targeting the Intel GPU | Supported Intel GPU, supported Ubuntu release, and Intel GPU compute drivers accessible to the user running the app. |
+| Apple Silicon Mac | ONNX Runtime Core ML, allowing GPU and CPU | Native arm64 Python and macOS 14 or later. |
+
+On Ubuntu, install the graphics compute drivers appropriate to the exact Intel GPU using the [OpenVINO installation guide](https://docs.openvino.ai/2026/get-started/install-openvino.html). The setup command installs Python packages; it does not install system drivers or change device permissions. The Intel GPU must be listed by `.venv-ai/bin/python -c 'import openvino as ov; print(ov.Core().available_devices)'`. An Intel CPU alone does not establish GPU compatibility.
+
+The native process is launched by the app and communicates over local process pipes; it does not open another network port. The first native run may take longer while compiling the model. Model caches live under `.data/native-ai`. Native Portrait uses a fixed 512 × 512 tensor; the complete frame is resized and the mask mapped back to its original aspect ratio.
+
+The reported runtime identifies the execution backend, not a guarantee that every operation runs on one chip. Core ML can divide work between GPU and CPU; ONNX WebGPU can also use CPU for unsupported operations. Intel OpenVINO explicitly targets its GPU. Switching acceleration does not change which objects a model was trained to retain—test actual props before an event.
+
+### Ubuntu / mini PC setup
+
+Install Node.js 22 or later and a current desktop Chrome, Chromium, or Edge browser. Copy/clone the project, then run the following on the Ubuntu machine:
+
+```bash
+npm ci
+npm run build
+npm start
+```
+
+Open `http://127.0.0.1:3000/admin` on that same machine and choose your background mode. Run `npm ci` on Ubuntu itself so native dependencies such as Sharp match Linux; do not copy `node_modules` from a Mac. A normal desktop session with browser WebGL support is required for MediaPipe's image handling, including in CPU mode. Integrated graphics is sufficient for the browser path; CUDA, Python, and a separate AI service are not required. Python is only needed for the optional native acceleration setup above. Unsupported browser graphics configurations show an error rather than saving an unprocessed photo.
+
+Webcams use the browser's camera permissions. For Canon USB tethering, also install `gphoto2` (`sudo apt install gphoto2`) and verify `gphoto2 --auto-detect` works as the same user running the booth. Close photo-import apps that have claimed the camera. Keep the application bound to localhost.
 
 ## Canon EOS 5D Mark IV
 
@@ -89,6 +154,12 @@ npm run build
 ```
 
 The tests cover countdown timing and cancellation, chroma keying, actual route handlers, image validation and normalization, atomic writes, session idempotence, recipient history, Gmail transport success/failure, secret redaction, local-request checks, camera process timeouts, USB reconnection, and temporary-file cleanup. Email tests use a mock transport and never send mail.
+
+AI tests also cover settings migration and model validation, confidence/alpha mask composition, rolling preview measurements, worker crashes/timeouts, serialized processing after cancellation, GPU fallback, device loss, and native process lifecycle. Run native preprocessing and setup tests with `.venv-ai/bin/python -m unittest discover -s scripts/native-ai -p 'test_*.py'` after optional native setup.
+
+For real Portrait mask correctness, temporarily copy `tests/browser/modnet-gpu-parity.html` to `public/modnet-gpu-parity.html` while the app is running, open `http://127.0.0.1:3000/modnet-gpu-parity.html`, and choose a portrait. The check compares CPU and WebGPU alpha values on identical frames across three image shapes and repeated runs; it requires mean absolute error ≤ 0.001 and foreground IoU ≥ 0.99. Images stay in browser memory. Remove the temporary public HTML afterward. Run this check when changing the model, ONNX runtime, or GPU session options: finite, in-range masks alone do not establish correct segmentation. Portrait explicitly uses NCHW on WebGPU because the runtime's default layout produced fragmented masks in this check.
+
+Chromium acceptance checks ran all three actual models on a public portrait and verified live model switching, retained CPU/GPU comparison measurements, and saved acceleration settings. Apple Silicon checks exercised MediaPipe GPU, ONNX WebGPU, browser CPU, and actual Core ML inference through the local API. Full AI kiosk sessions with the synthetic Canon driver verified three saved 2400 × 1600 JPEGs and photo review. These checks ran on the development Mac; Intel OpenVINO GPU execution and mini PC performance still need an on-device Ubuntu check.
 
 The built-in scenery is bundled locally from [Unsplash](https://unsplash.com), so the booth does not need to fetch background images during an event.
 

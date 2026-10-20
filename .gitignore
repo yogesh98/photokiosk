@@ -43,3 +43,11 @@ next-env.d.ts
 
 # Local booth photos, recipient addresses, and Gmail credentials
 /.data/
+
+# Generated from the pinned local inference packages at install/dev/build
+/public/vendor/mediapipe/
+/public/vendor/onnxruntime/
+
+# Optional local native AI environment and Python bytecode
+/.venv-ai/
+__pycache__/

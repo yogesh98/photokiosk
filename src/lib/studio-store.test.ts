@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import sharp from "sharp";
 import type { SendMailOptions } from "nodemailer";
+import { AI_ACCELERATIONS, AI_MODELS, DEFAULT_AI_ACCELERATION, DEFAULT_AI_MODEL } from "./ai-models";
 import {
   addBackground, assertLocalRequest, beginSessionEmail, createSession, deleteBackground,
   getSettings, readMedia, readStudio, StudioError, updateSettings, validateEmail,
@@ -50,6 +51,10 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     const studio = await readStudio();
     assert.deepEqual(studio.backgrounds.map((item) => item.id), ["coast", "mountains", "desert", "palms", "lake", "studio"]);
     assert.equal(studio.sessions.length, 0);
+    assert.equal(studio.settings.backgroundMode, "green-screen");
+    assert.equal(studio.settings.aiModel, DEFAULT_AI_MODEL);
+    assert.equal(studio.settings.aiAcceleration, DEFAULT_AI_ACCELERATION);
+    assert.deepEqual(studio.settings.backgroundSequence, { mode: "single", photoIds: ["coast", "coast", "coast"] });
     assert.equal(studio.settings.gmail.configured, false);
     studio.settings.eventName = "Changed in memory";
     assert.equal((await readStudio()).settings.eventName, "The good times");
@@ -81,6 +86,334 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     await assert.rejects(updateSettings({ gmail: { appPassword: "normal-password" } }), /16-character/);
     await assert.rejects(updateSettings({ gmail: { senderName: "Sender\r\nBcc: attacker@example.com" } }), /single line/);
     assert.throws(() => validateEmail("a@example.com\r\nBcc:b@example.com"), /valid email/);
+  });
+
+  test("migrates legacy green screen choices without changing the original settings", async () => {
+    for (const enabled of [true, false]) {
+      const directory = await isolated();
+      const filename = path.join(directory, "studio.json");
+      const legacy = JSON.parse(await readFile(filename, "utf8"));
+      delete legacy.settings.backgroundMode;
+      legacy.settings.chroma.enabled = enabled;
+      legacy.settings.chroma.similarity = 0.47;
+      legacy.settings.eventName = "An existing booth";
+      await writeFile(filename, JSON.stringify(legacy));
+
+      const migrated = await getSettings();
+      assert.equal(migrated.backgroundMode, enabled ? "green-screen" : "off");
+      assert.equal(migrated.chroma.enabled, enabled);
+      assert.equal(migrated.chroma.similarity, 0.47);
+      assert.equal(migrated.eventName, "An existing booth");
+      const persisted = JSON.parse(await readFile(filename, "utf8"));
+      assert.equal(persisted.settings.backgroundMode, migrated.backgroundMode);
+      assert.deepEqual((await getSettings()).chroma, migrated.chroma);
+    }
+  });
+
+  test("saves all background modes and exposes the selected mode to the guest kiosk", async () => {
+    const directory = await isolated();
+    await updateSettings({ chroma: { similarity: 0.47, smoothness: 0.16, spill: 0.51 } });
+    for (const backgroundMode of ["ai", "off", "green-screen", "ai"] as const) {
+      const response = await settingsPATCH(request("/api/settings", {
+        ...json({ backgroundMode }), method: "PATCH",
+      }));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).settings.backgroundMode, backgroundMode);
+      const stored = await getSettings();
+      assert.equal(stored.backgroundMode, backgroundMode);
+      assert.deepEqual(stored.chroma, {
+        enabled: backgroundMode === "green-screen",
+        similarity: 0.47, smoothness: 0.16, spill: 0.51,
+      });
+      const persisted = JSON.parse(await readFile(path.join(directory, "studio.json"), "utf8"));
+      assert.equal(persisted.settings.backgroundMode, backgroundMode);
+      const guest = await kioskGET(request("/api/kiosk"));
+      assert.equal(guest.status, 200);
+      const guestSettings = (await guest.json()).settings;
+      assert.equal(guestSettings.backgroundMode, backgroundMode);
+      assert.equal(guestSettings.chroma.enabled, backgroundMode === "green-screen");
+    }
+  });
+
+  test("migrates booths without a model choice to the original model and preserves their data", async () => {
+    const directory = await isolated();
+    await configureGmail();
+    await updateSettings({ backgroundMode: "ai", eventName: "An existing AI booth" });
+    await createSession(sessionInput());
+    const filename = path.join(directory, "studio.json");
+    const legacy = JSON.parse(await readFile(filename, "utf8"));
+    delete legacy.settings.aiModel;
+    await writeFile(filename, JSON.stringify(legacy));
+
+    const migrated = await getSettings();
+    assert.equal(migrated.aiModel, DEFAULT_AI_MODEL);
+    assert.equal(migrated.backgroundMode, "ai");
+    const persisted = JSON.parse(await readFile(filename, "utf8"));
+    assert.deepEqual(persisted, {
+      ...legacy,
+      settings: { ...legacy.settings, aiModel: DEFAULT_AI_MODEL },
+    });
+    assert.equal((await getSettings()).aiModel, DEFAULT_AI_MODEL);
+  });
+
+  test("saves each AI model through the settings API and round-trips it to the guest kiosk", async () => {
+    const directory = await isolated();
+    for (const { id: aiModel } of AI_MODELS) {
+      const response = await settingsPATCH(request("/api/settings", {
+        ...json({ backgroundMode: "ai", aiModel }), method: "PATCH",
+      }));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).settings.aiModel, aiModel);
+      assert.equal((await getSettings()).aiModel, aiModel);
+      const persisted = JSON.parse(await readFile(path.join(directory, "studio.json"), "utf8"));
+      assert.equal(persisted.settings.aiModel, aiModel);
+      const guest = await kioskGET(request("/api/kiosk"));
+      assert.equal(guest.status, 200);
+      const guestSettings = (await guest.json()).settings;
+      assert.equal(guestSettings.aiModel, aiModel);
+      assert.equal(guestSettings.backgroundMode, "ai");
+    }
+    await updateSettings({ backgroundMode: "off" });
+    assert.equal((await getSettings()).aiModel, AI_MODELS.at(-1)!.id);
+  });
+
+  test("rejects invalid AI models atomically, including mixed settings patches", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const before = await readFile(filename, "utf8");
+    for (const aiModel of ["unknown", "", null, false, 1, {}, []]) {
+      const response = await settingsPATCH(request("/api/settings", {
+        ...json({ eventName: "Should not save", backgroundMode: "ai", aiModel }), method: "PATCH",
+      }));
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /Choose an available AI model/);
+      assert.equal(await readFile(filename, "utf8"), before);
+    }
+    await assert.rejects(updateSettings({
+      aiModel: "modnet", gmail: { senderName: "Invalid\nSender" },
+    }), /single line/);
+    assert.equal(await readFile(filename, "utf8"), before);
+  });
+
+  test("reports an invalid saved AI model without overwriting existing booth data", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const invalid = JSON.parse(await readFile(filename, "utf8"));
+    invalid.settings.aiModel = "unknown";
+    const serialized = JSON.stringify(invalid);
+    await writeFile(filename, serialized);
+    await assert.rejects(readStudio(), (error: unknown) => error instanceof StudioError && error.status === 500);
+    assert.equal(await readFile(filename, "utf8"), serialized);
+  });
+
+  test("migrates booths without an acceleration preference and preserves existing data", async () => {
+    const directory = await isolated();
+    await configureGmail();
+    await updateSettings({ backgroundMode: "ai", aiModel: "modnet", eventName: "Existing booth" });
+    await createSession(sessionInput());
+    const filename = path.join(directory, "studio.json");
+    const legacy = JSON.parse(await readFile(filename, "utf8"));
+    delete legacy.settings.aiAcceleration;
+    await writeFile(filename, JSON.stringify(legacy));
+    assert.equal((await getSettings()).aiAcceleration, DEFAULT_AI_ACCELERATION);
+    assert.deepEqual(JSON.parse(await readFile(filename, "utf8")), {
+      ...legacy,
+      settings: { ...legacy.settings, aiAcceleration: DEFAULT_AI_ACCELERATION },
+    });
+  });
+
+  test("saves all acceleration preferences and round-trips them to the kiosk", async () => {
+    const directory = await isolated();
+    for (const { id: aiAcceleration } of AI_ACCELERATIONS) {
+      const response = await settingsPATCH(request("/api/settings", {
+        ...json({ backgroundMode: "ai", aiAcceleration }), method: "PATCH",
+      }));
+      assert.equal(response.status, 200);
+      assert.equal((await response.json()).settings.aiAcceleration, aiAcceleration);
+      assert.equal((await getSettings()).aiAcceleration, aiAcceleration);
+      const persisted = JSON.parse(await readFile(path.join(directory, "studio.json"), "utf8"));
+      assert.equal(persisted.settings.aiAcceleration, aiAcceleration);
+      assert.equal((await (await kioskGET(request("/api/kiosk"))).json()).settings.aiAcceleration, aiAcceleration);
+    }
+    await updateSettings({ backgroundMode: "off" });
+    assert.equal((await getSettings()).aiAcceleration, "gpu");
+  });
+
+  test("rejects invalid acceleration preferences atomically", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const before = await readFile(filename, "utf8");
+    for (const aiAcceleration of ["metal", "", null, true, 1, {}, []]) {
+      const response = await settingsPATCH(request("/api/settings", {
+        ...json({ eventName: "Should not save", aiModel: "modnet", aiAcceleration }), method: "PATCH",
+      }));
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /Choose Auto, CPU, or GPU/);
+      assert.equal(await readFile(filename, "utf8"), before);
+    }
+    await assert.rejects(updateSettings({
+      aiAcceleration: "gpu", gmail: { senderName: "Invalid\nSender" },
+    }), /single line/);
+    assert.equal(await readFile(filename, "utf8"), before);
+  });
+
+  test("preserves saved data with an invalid acceleration preference for recovery", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const invalid = JSON.parse(await readFile(filename, "utf8"));
+    invalid.settings.aiAcceleration = "invalid";
+    const serialized = JSON.stringify(invalid);
+    await writeFile(filename, serialized);
+    await assert.rejects(readStudio(), (error: unknown) => error instanceof StudioError && error.status === 500);
+    assert.equal(await readFile(filename, "utf8"), serialized);
+  });
+
+  test("migrates older booths to the same active background for all photos without losing existing data", async () => {
+    const directory = await isolated();
+    await configureGmail();
+    await updateSettings({ activeBackgroundId: "mountains", backgroundMode: "ai", eventName: "Existing photo booth" });
+    await createSession(sessionInput());
+    const filename = path.join(directory, "studio.json");
+    const legacy = JSON.parse(await readFile(filename, "utf8"));
+    delete legacy.settings.backgroundSequence;
+    await writeFile(filename, JSON.stringify(legacy));
+    const expected = { mode: "single", photoIds: ["mountains", "mountains", "mountains"] };
+    assert.deepEqual((await getSettings()).backgroundSequence, expected);
+    assert.deepEqual(JSON.parse(await readFile(filename, "utf8")), {
+      ...legacy, settings: { ...legacy.settings, backgroundSequence: expected },
+    });
+  });
+
+  test("round-trips every background sequence mode through settings, persistence, and the guest API", async () => {
+    const directory = await isolated();
+    for (const mode of ["single", "rotate", "custom"] as const) {
+      const backgroundSequence = { mode, photoIds: ["mountains", "desert", "coast"] };
+      const response = await settingsPATCH(request("/api/settings", { ...json({ backgroundSequence }), method: "PATCH" }));
+      assert.equal(response.status, 200);
+      assert.deepEqual((await response.json()).settings.backgroundSequence, backgroundSequence);
+      assert.deepEqual((await getSettings()).backgroundSequence, backgroundSequence);
+      const persisted = JSON.parse(await readFile(path.join(directory, "studio.json"), "utf8"));
+      assert.deepEqual(persisted.settings.backgroundSequence, backgroundSequence);
+      const guest = await kioskGET(request("/api/kiosk"));
+      assert.deepEqual((await guest.json()).settings.backgroundSequence, backgroundSequence);
+    }
+  });
+
+  test("rejects invalid background sequences without persisting any part of a settings patch", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const before = await readFile(filename, "utf8");
+    const invalid = [
+      null, [], "rotate", {},
+      { mode: "random", photoIds: ["coast", "coast", "coast"] },
+      { mode: "custom", photoIds: ["coast", "mountains"] },
+      { mode: "custom", photoIds: ["coast", "mountains", "desert", "lake"] },
+      { mode: "custom", photoIds: ["coast", "mountains", null] },
+      { mode: "custom", photoIds: ["coast", "mountains", ""] },
+      { mode: "single", photoIds: ["coast", "mountains", "missing"] },
+    ];
+    for (const backgroundSequence of invalid) {
+      const response = await settingsPATCH(request("/api/settings", {
+        ...json({ eventName: "Should not save", activeBackgroundId: "desert", backgroundSequence }), method: "PATCH",
+      }));
+      assert.equal(response.status, 400);
+      assert.equal(await readFile(filename, "utf8"), before);
+    }
+    await assert.rejects(updateSettings({
+      backgroundSequence: { mode: "rotate", photoIds: ["coast", "mountains", "desert"] },
+      gmail: { senderName: "Invalid\nSender" },
+    }), /single line/);
+    assert.equal(await readFile(filename, "utf8"), before);
+  });
+
+  test("preserves malformed saved background sequences for recovery", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const invalid = JSON.parse(await readFile(filename, "utf8"));
+    invalid.settings.backgroundSequence = { mode: "custom", photoIds: ["coast"] };
+    const serialized = JSON.stringify(invalid);
+    await writeFile(filename, serialized);
+    await assert.rejects(readStudio(), (error: unknown) => error instanceof StudioError && error.status === 500);
+    assert.equal(await readFile(filename, "utf8"), serialized);
+  });
+
+  test("deleting an upload repairs all photo references while preserving other choices", async () => {
+    await isolated();
+    const uploaded = await addBackground(new File([new Uint8Array(fixture)], "party.png", { type: "image/png" }), "Party wall");
+    await updateSettings({
+      activeBackgroundId: "mountains",
+      backgroundSequence: { mode: "custom", photoIds: [uploaded.id, "desert", uploaded.id] },
+    });
+    const deleted = await deleteBackground(uploaded.id);
+    assert.deepEqual(deleted.settings.backgroundSequence, { mode: "custom", photoIds: ["mountains", "desert", "mountains"] });
+    assert.deepEqual((await getSettings()).backgroundSequence, deleted.settings.backgroundSequence);
+
+    const active = await addBackground(new File([new Uint8Array(fixture)], "active.png", { type: "image/png" }), "Active wall");
+    await updateSettings({ activeBackgroundId: active.id, backgroundSequence: { mode: "custom", photoIds: [active.id, "desert", active.id] } });
+    const fallback = await deleteBackground(active.id);
+    assert.equal(fallback.settings.activeBackgroundId, "coast");
+    assert.deepEqual(fallback.settings.backgroundSequence.photoIds, ["coast", "desert", "coast"]);
+  });
+
+  test("stores optional per-photo background names with a session and preserves old clients", async () => {
+    await isolated();
+    const backgroundNames = ["Italian coast", "Alpine escape", "Desert glow"];
+    const created = await sessionPOST(request("/api/sessions", json({ ...sessionInput(), backgroundNames })));
+    assert.equal(created.status, 201);
+    const captured = (await created.json()).session;
+    assert.deepEqual(captured.backgroundNames, backgroundNames);
+    assert.equal(captured.backgroundName, "Italian coast");
+    assert.deepEqual((await readStudio()).sessions[0].backgroundNames, backgroundNames);
+    const legacy = await createSession(sessionInput());
+    assert.equal(legacy.backgroundNames, undefined);
+  });
+
+  test("rejects malformed per-photo background metadata before creating a session", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const before = await readFile(filename, "utf8");
+    for (const backgroundNames of [null, "Coast", [], ["Coast", "Lake"], ["Coast", "Lake", "Desert", "Studio"], ["Coast", "", "Desert"], ["Coast", 1, "Desert"], ["Coast", "Lake", "x".repeat(81)]]) {
+      await assert.rejects(createSession({ ...sessionInput(), backgroundNames }), /three background names|Background name is invalid/);
+      assert.equal(await readFile(filename, "utf8"), before);
+    }
+    assert.equal((await readStudio()).sessions.length, 0);
+  });
+
+  test("supports legacy toggle updates while an explicit background mode takes precedence", async () => {
+    await isolated();
+    await updateSettings({ backgroundMode: "ai" });
+    assert.equal((await updateSettings({ chroma: { enabled: true } })).backgroundMode, "green-screen");
+    assert.equal((await updateSettings({ chroma: { enabled: false } })).backgroundMode, "off");
+    const ai = await updateSettings({ backgroundMode: "ai", chroma: { enabled: true } });
+    assert.equal(ai.backgroundMode, "ai");
+    assert.equal(ai.chroma.enabled, false);
+    const green = await updateSettings({ backgroundMode: "green-screen", chroma: { enabled: false } });
+    assert.equal(green.backgroundMode, "green-screen");
+    assert.equal(green.chroma.enabled, true);
+    const off = await updateSettings({ backgroundMode: "off", chroma: { enabled: true } });
+    assert.equal(off.backgroundMode, "off");
+    assert.equal(off.chroma.enabled, false);
+  });
+
+  test("rejects invalid background modes atomically, including mixed settings patches", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const before = await readFile(filename, "utf8");
+    for (const backgroundMode of ["cloud", "", null, true, {}]) {
+      await assert.rejects(updateSettings({
+        eventName: "Should not save", chroma: { enabled: false, similarity: 0.6 }, backgroundMode,
+      }), /Choose green screen, AI, or original background mode/);
+      assert.equal(await readFile(filename, "utf8"), before);
+    }
+    await assert.rejects(updateSettings({
+      backgroundMode: "ai", gmail: { senderName: "Invalid\nSender" },
+    }), /single line/);
+    assert.equal(await readFile(filename, "utf8"), before);
+    const response = await settingsPATCH(request("/api/settings", {
+      ...json({ backgroundMode: "cloud" }), method: "PATCH",
+    }));
+    assert.equal(response.status, 400);
+    assert.equal((await getSettings()).backgroundMode, "green-screen");
   });
 
   test("validates uploaded pixels, stores normalized images, and removes active uploads safely", async () => {

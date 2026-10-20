@@ -1,0 +1,22 @@
+MediaPipe Selfie Multiclass 256x256, float32, version 1
+Copyright Google LLC. License: Apache License 2.0 (see LICENSE.txt).
+
+Original, unmodified model:
+https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite
+SHA-256: c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0
+Size: 16,371,837 bytes.
+
+Official task guide:
+https://developers.google.com/edge/mediapipe/solutions/vision/image_segmenter
+Model card (includes license and limitations):
+https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Multiclass%20Segmentation.pdf
+
+Input: 256x256 RGB. MediaPipe returns six confidence masks:
+0 background, 1 hair, 2 body-skin, 3 face-skin, 4 clothes, 5 other accessories.
+We calculate person foreground as 1 - background probability. No additional
+softmax is applied; MediaPipe handles model metadata and output activation.
+Model choice does not guarantee a better result for every scene or person.
+
+Runtime: @mediapipe/tasks-vision 1.1.1, Apache License 2.0. Runtime files are
+copied from node_modules to public/vendor/mediapipe at install/dev/build time.
+All camera inference and assets remain local to this app.

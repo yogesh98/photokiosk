@@ -31,6 +31,8 @@ import {
   X,
 } from "lucide-react";
 import { LivePreview } from "@/components/kiosk/live-preview";
+import { BackgroundSequenceSettings } from "@/components/background-sequence-settings";
+import { resolveSessionBackgrounds } from "@/lib/background-sequence";
 import {
   DEFAULT_SETTINGS,
   type Background,
@@ -94,6 +96,12 @@ export function StudioAdmin() {
   const background = data.backgrounds.find(
     (b) => b.id === settings.activeBackgroundId,
   );
+  // Keep a planned backdrop available when trying replacement before saving Off → AI.
+  // LivePreview still honors the actual background mode.
+  const previewBackground = resolveSessionBackgrounds(
+    { ...settings, backgroundMode: "green-screen" },
+    data.backgrounds,
+  )[0];
   const cameraConnected =
     settings.camera.mode === "canon" ? camera.connected : browserReady;
   const sentSessions = data.sessions.filter(
@@ -611,11 +619,14 @@ export function StudioAdmin() {
                     {
                       tab: "backgrounds" as Tab,
                       icon: ImagePlus,
-                      title: "Green screen magic",
-                      note: settings.chroma.enabled
-                        ? "Background replacement is on"
-                        : "Background replacement is off",
-                      good: settings.chroma.enabled,
+                      title: "Background replacement",
+                      note:
+                        settings.backgroundMode === "ai"
+                          ? "AI people · runs on this device"
+                          : settings.backgroundMode === "green-screen"
+                            ? "Green screen removal is on"
+                            : "Original camera background",
+                      good: settings.backgroundMode !== "off",
                     },
                   ].map((row) => (
                     <button
@@ -652,7 +663,7 @@ export function StudioAdmin() {
                 <div className="section-heading">
                   <div>
                     <h2>Somewhere a little different</h2>
-                    <p>One green screen. A whole world of possibilities.</p>
+                    <p>A new scene for every good memory.</p>
                   </div>
                   <button
                     className="text-button"
@@ -818,14 +829,21 @@ export function StudioAdmin() {
               <div className="background-info">
                 <Sparkles size={18} />
                 <span>
-                  Your active background appears in the live preview and every
-                  captured photo.
+                  Keep one scene for the whole session, rotate through your
+                  backgrounds, or choose a scene for each photo.
                 </span>
                 <button onClick={() => setModal("preview")}>
                   Preview the magic
                   <ArrowUpRight size={14} />
                 </button>
               </div>
+              <BackgroundSequenceSettings
+                key={JSON.stringify([settings.backgroundSequence, settings.activeBackgroundId, settings.backgroundMode, data.backgrounds.map((item) => item.id)])}
+                settings={settings}
+                backgrounds={data.backgrounds}
+                busy={busy}
+                onSave={saveSettings}
+              />
               <div className="backgrounds-grid">
                 {data.backgrounds.map((b) => (
                   <div
@@ -903,9 +921,9 @@ export function StudioAdmin() {
                 </button>
               </div>
               <ChromaSettings
-                key={JSON.stringify(settings.chroma)}
+                key={JSON.stringify([settings.backgroundMode, settings.aiModel, settings.aiAcceleration, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
                 settings={settings}
-                background={background}
+                background={previewBackground}
                 busy={busy}
                 onSave={saveSettings}
               />
@@ -927,7 +945,7 @@ export function StudioAdmin() {
               <CameraSettings
                 key={JSON.stringify(settings.camera)}
                 settings={settings}
-                background={background}
+                background={previewBackground}
                 camera={camera}
                 busy={busy}
                 onSave={saveSettings}
@@ -935,9 +953,9 @@ export function StudioAdmin() {
                 onCheck={checkCamera}
               />
               <ChromaSettings
-                key={JSON.stringify(settings.chroma)}
+                key={JSON.stringify([settings.backgroundMode, settings.aiModel, settings.aiAcceleration, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
                 settings={settings}
-                background={background}
+                background={previewBackground}
                 busy={busy}
                 onSave={saveSettings}
               />
@@ -999,10 +1017,14 @@ export function StudioAdmin() {
           onClose={() => setModal(null)}
         >
           <div className="admin-preview">
-            <LivePreview settings={settings} background={background} />
+            <LivePreview settings={settings} background={previewBackground} />
           </div>
           <div className="modal-footer">
-            <span>{background?.name} · Live background replacement</span>
+            <span>
+              {settings.backgroundMode === "off"
+                ? "Original camera background"
+                : `Photo 1: ${previewBackground?.name || "Selected scene"} · ${settings.backgroundMode === "ai" ? "AI people" : "Green screen"}`}
+            </span>
             <Link className="button dark" target="_blank" href="/kiosk">
               Launch kiosk
               <ArrowUpRight size={15} />
@@ -1025,7 +1047,7 @@ export function StudioAdmin() {
                 ],
                 [
                   "Set your scene.",
-                  "Put a green screen behind your guests, choose a background, and adjust the key until the edges look natural.",
+                  "Choose a background, then select Green screen for a physical backdrop or AI people to replace the scene on this device. Choose Off to keep your original scene.",
                 ],
                 [
                   "Send the smiles.",
