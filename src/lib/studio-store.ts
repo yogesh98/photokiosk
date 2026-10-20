@@ -33,6 +33,7 @@ export class StudioError extends Error {
 type SavedState = StudioData & {
   version: 1;
   gmailAppPassword: string;
+  b2ApplicationKey: string;
   requestIds?: Record<string, string>;
 };
 type StoreLock = { tail: Promise<void>; initialized: boolean };
@@ -73,6 +74,11 @@ function publicSettings(state: SavedState): KioskSettings {
     gmail: {
       ...state.settings.gmail,
       configured: Boolean(state.gmailAppPassword && state.settings.gmail.email),
+    },
+    b2: {
+      ...state.settings.b2,
+      configured: Boolean(state.settings.b2.enabled && state.b2ApplicationKey &&
+        state.settings.b2.keyId && state.settings.b2.bucketName),
     },
   };
 }
@@ -141,6 +147,7 @@ async function withStore<T>(
         backgrounds: structuredClone(BUILTINS),
         sessions: [],
         gmailAppPassword: "",
+        b2ApplicationKey: "",
       };
       changed = true;
     }
@@ -165,12 +172,29 @@ async function withStore<T>(
       state.settings.backgroundSequence = { mode: "single", photoIds: [id, id, id] };
       changed = true;
     }
+    if (state.settings.b2 === undefined) {
+      state.settings.b2 = structuredClone(DEFAULT_SETTINGS.b2);
+      changed = true;
+    }
+    if (state.b2ApplicationKey === undefined) {
+      state.b2ApplicationKey = "";
+      changed = true;
+    }
     const chromaEnabled = state.settings.backgroundMode === "green-screen";
     if (state.settings.chroma.enabled !== chromaEnabled) {
       state.settings.chroma.enabled = chromaEnabled;
       changed = true;
     }
     if (!lock.initialized) {
+      for (const session of state.sessions) {
+        if (session.sharing?.status === "uploading") {
+          session.sharing = {
+            status: "failed",
+            error: "Upload was interrupted. Your local photos are safe; retry sharing.",
+          };
+          changed = true;
+        }
+      }
       // A process restart cannot establish whether Gmail accepted an interrupted send.
       for (const session of state.sessions)
         if (session.status === "sending") {
@@ -213,6 +237,12 @@ export async function getGmailCredentials() {
   return withStore((state) => ({
     ...publicSettings(state).gmail,
     appPassword: state.gmailAppPassword,
+  }));
+}
+export async function getB2Credentials() {
+  return withStore((state) => ({
+    ...publicSettings(state).b2,
+    applicationKey: state.b2ApplicationKey,
   }));
 }
 
@@ -355,6 +385,31 @@ export async function updateSettings(input: unknown): Promise<KioskSettings> {
         // An empty password clears saved credentials. Omitting the field preserves them.
         state.gmailAppPassword = password;
       }
+    }
+    if ("b2" in patch) {
+      const b2 = record(patch.b2, "Backblaze B2");
+      if ("enabled" in b2) settings.b2.enabled = bool(b2.enabled, "B2 sharing");
+      if ("keyId" in b2) {
+        const keyId = text(b2.keyId, "B2 key ID", 100);
+        if (keyId && !/^[a-zA-Z0-9]+$/.test(keyId))
+          throw new StudioError("Use the application key ID from Backblaze B2.");
+        settings.b2.keyId = keyId;
+      }
+      if ("bucketName" in b2) {
+        const bucketName = text(b2.bucketName, "B2 bucket name", 63);
+        if (bucketName && (!/^[a-zA-Z0-9-]{6,63}$/.test(bucketName) || bucketName.startsWith("b2-")))
+          throw new StudioError("Use a B2 bucket name with 6–63 letters, digits, or hyphens.");
+        settings.b2.bucketName = bucketName;
+      }
+      if ("applicationKey" in b2) {
+        const key = text(b2.applicationKey, "B2 application key", 200);
+        if (key && !/^[\x21-\x7e]+$/.test(key))
+          throw new StudioError("Use the application key from Backblaze B2.");
+        // Omitting the secret preserves it; an explicit empty value clears it.
+        state.b2ApplicationKey = key;
+      }
+      if (settings.b2.enabled && (!settings.b2.keyId || !settings.b2.bucketName || !state.b2ApplicationKey))
+        throw new StudioError("Enter a B2 key ID, application key, and bucket name before enabling sharing.");
     }
     return publicSettings(state);
   }, true);
@@ -547,6 +602,44 @@ export async function createSession(input: unknown): Promise<PhotoSession> {
     return session;
   }, true);
 }
+export async function getSession(id: string): Promise<PhotoSession> {
+  return withStore((state) => {
+    const session = state.sessions.find((item) => item.id === id);
+    if (!session) throw new StudioError("Photo session not found.", 404);
+    return session;
+  });
+}
+
+export async function beginSessionShare(id: string): Promise<PhotoSession> {
+  return withStore((state) => {
+    const session = state.sessions.find((item) => item.id === id);
+    if (!session) throw new StudioError("Photo session not found.", 404);
+    if (session.sharing?.status === "uploaded") return session;
+    if (session.sharing?.status === "uploading")
+      throw new StudioError("These photos are already being uploaded.", 409);
+    if (!publicSettings(state).b2.configured)
+      throw new StudioError("Backblaze B2 is not connected. Ask the booth host to configure it in Admin.", 422);
+    session.sharing = { status: "uploading" };
+    return session;
+  }, true);
+}
+
+export async function finishSessionShare(
+  id: string,
+  result: { galleryUrl: string; photoUrls: string[] } | { error: string },
+): Promise<PhotoSession> {
+  return withStore((state) => {
+    const session = state.sessions.find((item) => item.id === id);
+    if (!session) throw new StudioError("Photo session not found.", 404);
+    if (session.sharing?.status !== "uploading")
+      throw new StudioError("This photo session has no active upload.", 409);
+    session.sharing = "error" in result
+      ? { status: "failed", error: result.error }
+      : { status: "uploaded", ...result };
+    return session;
+  }, true);
+}
+
 export async function beginSessionEmail(
   id: string,
   emailInput: unknown,

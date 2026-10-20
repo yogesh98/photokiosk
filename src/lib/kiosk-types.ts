@@ -35,6 +35,12 @@ export interface KioskSettings {
     message: string;
     configured: boolean;
   };
+  b2: {
+    enabled: boolean;
+    keyId: string;
+    bucketName: string;
+    configured: boolean;
+  };
 }
 export interface Background {
   id: string;
@@ -52,6 +58,12 @@ export interface PhotoSession {
   backgroundName: string;
   backgroundNames?: [string, string, string];
   error?: string;
+  sharing?: {
+    status: "uploading" | "uploaded" | "failed";
+    galleryUrl?: string;
+    photoUrls?: string[];
+    error?: string;
+  };
   deliveries?: Array<{
     email: string;
     status: "sent" | "failed";
@@ -88,4 +100,5 @@ export const DEFAULT_SETTINGS: KioskSettings = {
       "Your good times, captured. Here are your photos from our photo booth. Thanks for being part of it!",
     configured: false,
   },
+  b2: { enabled: false, keyId: "", bucketName: "", configured: false },
 };

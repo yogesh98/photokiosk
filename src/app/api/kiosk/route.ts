@@ -15,6 +15,12 @@ export async function GET(request: Request) {
             message: "",
             configured: settings.gmail.configured,
           },
+          b2: {
+            enabled: settings.b2.enabled,
+            keyId: "",
+            bucketName: "",
+            configured: settings.b2.configured,
+          },
         },
         backgrounds,
       },

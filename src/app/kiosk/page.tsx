@@ -25,6 +25,7 @@ import {
   Image as ImageIcon,
   LoaderCircle,
   Mail,
+  QrCode,
   RefreshCw,
   Settings2,
   Sparkles,
@@ -36,6 +37,7 @@ import {
   LivePreview,
   type PreviewStatus,
 } from "@/components/kiosk/live-preview";
+import { PhotoSharing } from "@/components/kiosk/photo-sharing";
 import {
   runCaptureSequence,
   waitForCaptureScene,
@@ -87,12 +89,15 @@ export default function KioskPage() {
   const [email, setEmail] = useState("");
   const [sentAddress, setSentAddress] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [sharingError, setSharingError] = useState<string | null>(null);
+  const [sharingBusy, setSharingBusy] = useState(false);
   const [flash, setFlash] = useState(false);
   const [resetIn, setResetIn] = useState(20);
   const captureRef = useRef<CaptureReadiness>({ capture: null });
   const cameraErrorRef = useRef<string | null>(null);
   const sessionBackgroundNamesRef = useRef<[string, string, string]>(["Original background", "Original background", "Original background"]);
   const flowAbortRef = useRef<AbortController | null>(null);
+  const shareRequestRef = useRef<{ sessionId: string; controller: AbortController } | null>(null);
   const settingsAbortRef = useRef<AbortController | null>(null);
   const requestIdRef = useRef("");
   const flashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -133,6 +138,7 @@ export default function KioskPage() {
       controller.abort();
       settingsAbortRef.current?.abort();
       flowAbortRef.current?.abort();
+      shareRequestRef.current?.controller.abort();
       if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current);
     };
   }, [loadStudio]);
@@ -154,6 +160,8 @@ export default function KioskPage() {
   const reset = useCallback(() => {
     flowAbortRef.current?.abort();
     flowAbortRef.current = null;
+    shareRequestRef.current?.controller.abort();
+    shareRequestRef.current = null;
     captureRef.current = { capture: null };
     setSettingsRefreshing(true);
     setLoadingError(null);
@@ -167,12 +175,14 @@ export default function KioskPage() {
     setEmail("");
     setSentAddress("");
     setError(null);
+    setSharingError(null);
+    setSharingBusy(false);
     setFlash(false);
     void loadStudio();
   }, [loadStudio]);
 
   useEffect(() => {
-    if (stage !== "success") return;
+    if (stage !== "success" || sharingBusy) return;
     const interval = setInterval(
       () => setResetIn((value) => Math.max(0, value - 1)),
       1000,
@@ -182,7 +192,7 @@ export default function KioskPage() {
       clearInterval(interval);
       clearTimeout(timeout);
     };
-  }, [stage, reset]);
+  }, [stage, sharingBusy, reset]);
 
   const plannedBackgrounds = studio
     ? resolveSessionBackgrounds(studio.settings, studio.backgrounds)
@@ -198,6 +208,37 @@ export default function KioskPage() {
   const needsBackground = Boolean(
     studio && studio.settings.backgroundMode !== "off" && plannedBackgrounds.some((item) => !item),
   );
+
+  async function sharePhotos(savedSession: PhotoSession) {
+    if (shareRequestRef.current?.sessionId === savedSession.id || savedSession.sharing?.status === "uploaded") return;
+    const controller = new AbortController();
+    shareRequestRef.current?.controller.abort();
+    shareRequestRef.current = { sessionId: savedSession.id, controller };
+    setSharingBusy(true);
+    setSharingError(null);
+    setResetIn(20);
+    try {
+      const result = await api<{ session: PhotoSession }>(
+        `/api/sessions/${encodeURIComponent(savedSession.id)}/share`,
+        {},
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
+      if (result.session.sharing?.status !== "uploaded" || !result.session.sharing.galleryUrl) {
+        throw new Error(result.session.sharing?.error || "Your photo upload has not finished. Please try again.");
+      }
+      // Email may complete while the upload is running. Preserve its delivery state.
+      setSession((current) => current?.id === savedSession.id ? { ...current, sharing: result.session.sharing } : current);
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      setSharingError(`We couldn’t prepare your QR code. Your photos are still saved on this booth. ${error instanceof Error ? error.message : "Please try again."}`);
+    } finally {
+      if (shareRequestRef.current?.controller === controller) {
+        shareRequestRef.current = null;
+        if (!controller.signal.aborted) setSharingBusy(false);
+      }
+    }
+  }
 
   async function savePhotos(capturedPhotos: string[], signal?: AbortSignal) {
     if (!signal) {
@@ -224,6 +265,7 @@ export default function KioskPage() {
       if (signal?.aborted) return;
       setSession(result.session);
       setStage("review");
+      if (studio?.settings.b2.configured) void sharePhotos(result.session);
     } catch (error) {
       if (signal?.aborted) return;
       setStage("review");
@@ -293,7 +335,7 @@ export default function KioskPage() {
 
   async function sendPhotos(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!session || stage !== "review") return;
+    if (!session || stage !== "review" || !studio?.settings.gmail.configured) return;
     const address = email.trim();
     setError(null);
     setStage("sending");
@@ -311,7 +353,9 @@ export default function KioskPage() {
           result.session.error ||
             "Your email has not been sent yet. Please try again.",
         );
-      setSession(result.session);
+      setSession((current) => current?.id === result.session.id
+        ? { ...result.session, sharing: current.sharing ?? result.session.sharing }
+        : current);
       setSentAddress(address);
       setEmail("");
       setResetIn(20);
@@ -414,12 +458,13 @@ export default function KioskPage() {
               />
             ))}
           </div>
+          {studio.settings.b2.configured && session && (
+            <PhotoSharing sharing={session.sharing} busy={sharingBusy} error={sharingError} onRetry={() => void sharePhotos(session)} />
+          )}
           <button className="kiosk-primary" type="button" onClick={reset}>
             Next happy people <ArrowRight size={19} />
           </button>
-          <p className="kiosk-reset-note">
-            Ready for the next guest in {resetIn} seconds
-          </p>
+          {!sharingBusy && <p className="kiosk-reset-note">Ready for the next guest in {resetIn} seconds</p>}
         </section>
       ) : (
         <>
@@ -564,57 +609,50 @@ export default function KioskPage() {
             {reviewing ? (
               <aside className="kiosk-email-card">
                 <div className="kiosk-email-icon">
-                  <Mail size={23} strokeWidth={1.4} />
+                  {studio.settings.b2.configured ? <QrCode size={23} strokeWidth={1.4} />
+                    : studio.settings.gmail.configured ? <Mail size={23} strokeWidth={1.4} />
+                    : <Download size={23} strokeWidth={1.4} />}
                 </div>
                 <h2>Keep the good times.</h2>
                 <p>
-                  Leave your email and we’ll send all three photos straight to
-                  your inbox.
+                  {studio.settings.b2.configured
+                    ? studio.settings.gmail.configured
+                      ? "Scan to take all three photos with you, or send them to your inbox."
+                      : "Scan the QR code to view and download all three photos on your phone."
+                    : studio.settings.gmail.configured
+                      ? "Leave your email and we’ll send all three photos straight to your inbox."
+                      : "Your three photos are ready to download on this booth."}
                 </p>
-                <form onSubmit={sendPhotos}>
-                  <label htmlFor="guest-email">Your email address</label>
-                  <input
-                    id="guest-email"
-                    type="email"
-                    name="email"
-                    autoComplete="email"
-                    inputMode="email"
-                    placeholder="you@example.com"
-                    required
-                    maxLength={254}
-                    value={email}
-                    onChange={(event) => setEmail(event.target.value)}
-                    disabled={stage !== "review"}
-                  />
-                  {error && (
-                    <div className="kiosk-inline-error" role="alert">
-                      {error}
-                    </div>
-                  )}
-                  {!studio.settings.gmail.configured && (
-                    <p className="kiosk-email-unconfigured">
-                      The host hasn’t connected email yet.{" "}
-                      {session
-                        ? "Your photos are saved, and you can download them below."
-                        : "You can download your photos below while the host connects email."}
-                    </p>
-                  )}
-                  {!session && stage === "review" ? (
-                    <button
-                      type="button"
-                      className="kiosk-primary"
-                      onClick={() => void savePhotos(photos)}
-                    >
-                      <RefreshCw size={16} />
-                      Retry saving photos
-                    </button>
-                  ) : (
+                {studio.settings.b2.configured && session && (
+                  <PhotoSharing sharing={session.sharing} busy={sharingBusy} error={sharingError} onRetry={() => void sharePhotos(session)} />
+                )}
+                {error && <div className="kiosk-inline-error" role="alert">{error}</div>}
+                {!session && stage === "review" && (
+                  <button type="button" className="kiosk-primary kiosk-save-retry" onClick={() => void savePhotos(photos)}>
+                    <RefreshCw size={16} /> Retry saving photos
+                  </button>
+                )}
+                {studio.settings.gmail.configured && (
+                  <form onSubmit={sendPhotos}>
+                    <label htmlFor="guest-email">Your email address</label>
+                    <input
+                      id="guest-email"
+                      type="email"
+                      name="email"
+                      autoComplete="email"
+                      inputMode="email"
+                      placeholder="you@example.com"
+                      required
+                      maxLength={254}
+                      value={email}
+                      onChange={(event) => setEmail(event.target.value)}
+                      disabled={stage !== "review"}
+                    />
                     <button
                       className="kiosk-primary"
                       type="submit"
                       disabled={
                         stage !== "review" ||
-                        !studio.settings.gmail.configured ||
                         !session
                       }
                     >
@@ -640,12 +678,14 @@ export default function KioskPage() {
                         </>
                       )}
                     </button>
-                  )}
-                </form>
-                <p className="kiosk-privacy">
-                  <Heart size={12} />
-                  Just your photos. A little happiness for your inbox.
-                </p>
+                  </form>
+                )}
+                {studio.settings.gmail.configured && (
+                  <p className="kiosk-privacy">
+                    <Heart size={12} />
+                    Just your photos. A little happiness for your inbox.
+                  </p>
+                )}
                 <div className="kiosk-review-actions">
                   <button
                     type="button"
@@ -666,7 +706,7 @@ export default function KioskPage() {
                   onClick={reset}
                   disabled={stage === "sending" || stage === "saving"}
                 >
-                  Finish without email <ChevronRight size={14} />
+                  {studio.settings.gmail.configured ? "Finish without email" : "All done"} <ChevronRight size={14} />
                 </button>
               </aside>
             ) : (
@@ -798,7 +838,7 @@ export default function KioskPage() {
                     </span>
                     <i />
                     <span>
-                      <span>3</span>Straight to your inbox
+                      <span>3</span>{studio.settings.b2.configured ? "Scan to keep your photos" : studio.settings.gmail.configured ? "Straight to your inbox" : "Download your photos"}
                     </span>
                   </div>
                 </>

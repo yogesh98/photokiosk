@@ -14,6 +14,7 @@ import {
   ChevronRight,
   CircleHelp,
   Clock3,
+  CloudUpload,
   Expand,
   ImagePlus,
   Images,
@@ -32,6 +33,7 @@ import {
 } from "lucide-react";
 import { LivePreview } from "@/components/kiosk/live-preview";
 import { BackgroundSequenceSettings } from "@/components/background-sequence-settings";
+import { BackblazeSettings } from "@/components/backblaze-settings";
 import { resolveSessionBackgrounds } from "@/lib/background-sequence";
 import {
   DEFAULT_SETTINGS,
@@ -55,13 +57,14 @@ import {
   UploadModal,
 } from "./studio-forms";
 
-type Tab = "overview" | "photos" | "backgrounds" | "camera" | "email";
+type Tab = "overview" | "photos" | "backgrounds" | "camera" | "email" | "storage";
 const navItems = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "photos", label: "Photo gallery", icon: Images },
   { id: "backgrounds", label: "Backgrounds", icon: ImagePlus },
   { id: "camera", label: "Camera setup", icon: Camera },
   { id: "email", label: "Email delivery", icon: Mail },
+  { id: "storage", label: "Backblaze B2", icon: CloudUpload },
 ] as const;
 export function StudioAdmin() {
   const [tab, setTab] = useState<Tab>("overview");
@@ -617,6 +620,13 @@ export function StudioAdmin() {
                       good: settings.gmail.configured,
                     },
                     {
+                      tab: "storage" as Tab,
+                      icon: CloudUpload,
+                      title: "QR photo sharing",
+                      note: settings.b2.configured ? settings.b2.bucketName : "Connect Backblaze B2",
+                      good: settings.b2.configured,
+                    },
+                    {
                       tab: "backgrounds" as Tab,
                       icon: ImagePlus,
                       title: "Background replacement",
@@ -977,6 +987,22 @@ export function StudioAdmin() {
               />
             </>
           )}
+          {tab === "storage" && (
+            <>
+              <PageHeading
+                eyebrow="A MEMORY TO TAKE HOME"
+                title="All three photos. One QR code."
+                description="Connect Backblaze B2 so guests can open and download their photos on their own phones."
+              />
+              <BackblazeSettings
+                key={JSON.stringify(settings.b2)}
+                settings={settings}
+                busy={busy}
+                onSave={saveSettings}
+                notify={notify}
+              />
+            </>
+          )}
           <footer className="studio-footer">
             <span>Made for the moments in between.</span>
             <Aperture size={14} />
@@ -1109,6 +1135,7 @@ export function StudioAdmin() {
       {selectedSession && (
         <SessionModal
           session={selectedSession}
+          sharingEnabled={settings.b2.configured}
           onClose={() => setSelectedSession(null)}
           onUpdate={async (s) => {
             setSelectedSession(s);

@@ -1957,6 +1957,44 @@
 .test-email .button {
   width: 100%;
 }
+.b2-layout .setting-toggle-row {
+  margin: 2px 0 24px;
+}
+.b2-explanation {
+  padding: 26px;
+}
+.b2-explanation > svg {
+  color: #87a46c;
+  margin: 22px 0 18px;
+}
+.b2-explanation h3 {
+  font-size: 18px;
+  margin-bottom: 12px;
+}
+.b2-explanation p {
+  color: #7e8b72;
+  font-size: 12px;
+  line-height: 1.8;
+  margin-top: 12px;
+}
+.session-cloud-sharing {
+  padding: 18px 0;
+  border-bottom: 1px solid #e6eadf;
+}
+.session-cloud-sharing h3 {
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+.session-cloud-sharing > p {
+  font-size: 11px;
+  line-height: 1.8;
+  color: #7e8b72;
+}
+.session-cloud-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .studio-modal {
   position: fixed;
   inset: 0;

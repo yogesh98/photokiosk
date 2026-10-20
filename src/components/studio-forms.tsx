@@ -15,6 +15,7 @@ import {
   Camera,
   Check,
   CheckCircle2,
+  CloudUpload,
   Expand,
   Images,
   Loader2,
@@ -991,19 +992,47 @@ export function UploadModal({
 
 export function SessionModal({
   session,
+  sharingEnabled,
   onClose,
   onUpdate,
   notify,
 }: {
   session: PhotoSession;
+  sharingEnabled: boolean;
   onClose: () => void;
   onUpdate: (session: PhotoSession) => Promise<void>;
   notify: Notify;
 }) {
   const [email, setEmail] = useState(session.email || "");
   const [sending, setSending] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => uploadAbortRef.current?.abort(), []);
+
+  async function share() {
+    if (uploading || sending) return;
+    const controller = new AbortController();
+    uploadAbortRef.current = controller;
+    setUploading(true);
+    try {
+      const result = await api<{ session: PhotoSession }>(
+        `/api/sessions/${encodeURIComponent(session.id)}/share`,
+        { ...json({}), signal: controller.signal },
+      );
+      if (controller.signal.aborted) return;
+      await onUpdate(result.session);
+      notify("The photo gallery is ready to share.");
+    } catch (error) {
+      if (controller.signal.aborted) return;
+      if (error instanceof StudioApiError && error.session) await onUpdate(error.session);
+      notify((error as Error).message, "error");
+    } finally {
+      if (!controller.signal.aborted) setUploading(false);
+    }
+  }
   async function send(e: FormEvent) {
     e.preventDefault();
+    if (sending || uploading) return;
     setSending(true);
     try {
       const result = await api<{ session: PhotoSession }>(
@@ -1060,6 +1089,28 @@ export function SessionModal({
             </strong>
           </div>
         </div>
+        {(sharingEnabled || session.sharing) && (
+          <section className="session-cloud-sharing">
+            <h3>QR photo sharing</h3>
+            {session.sharing?.status === "uploaded" && session.sharing.galleryUrl ? (
+              <div className="session-cloud-actions">
+                <a className="button light small" href={session.sharing.galleryUrl} target="_blank" rel="noreferrer">
+                  <ArrowUpRight size={14} /> Open cloud gallery
+                </a>
+              </div>
+            ) : (
+              <>
+                {session.sharing?.error && <p className="inline-error">{session.sharing.error}</p>}
+                {sharingEnabled ? (
+                  <button type="button" className="button light" disabled={uploading || sending} onClick={() => void share()}>
+                    {uploading ? <Loader2 size={15} className="spin" /> : <CloudUpload size={15} />}
+                    {uploading ? "Uploading photos…" : session.sharing ? "Retry photo upload" : "Upload photo gallery"}
+                  </button>
+                ) : <p>Connect Backblaze B2 to retry uploading this session.</p>}
+              </>
+            )}
+          </section>
+        )}
         {session.deliveries?.length ? (
           <section className="delivery-history">
             <h3>Where the memories went</h3>
@@ -1096,7 +1147,7 @@ export function SessionModal({
               onChange={(e) => setEmail(e.target.value)}
             />
           </label>
-          <button className="button dark" disabled={sending}>
+          <button className="button dark" disabled={sending || uploading}>
             {sending ? (
               <Loader2 size={16} className="spin" />
             ) : (

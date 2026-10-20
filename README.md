@@ -2,8 +2,8 @@
 
 A local photo booth with green-screen or on-device AI background replacement and a USB camera. Built with Next.js 16, React, and TypeScript.
 
-- **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, background replacement, camera settings, Gmail, and the gallery with recipients and delivery history.
-- **Kiosk:** [http://127.0.0.1:3000/kiosk](http://127.0.0.1:3000/kiosk). Live background replacement, a five-second countdown, three photos with three-second intervals, review/retake, and email entry after capture.
+- **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, background replacement, camera settings, Backblaze B2 sharing, Gmail, and the gallery with recipients and delivery history.
+- **Kiosk:** [http://127.0.0.1:3000/kiosk](http://127.0.0.1:3000/kiosk). Live background replacement, a five-second countdown, three photos with three-second intervals, review/retake, and optional QR sharing and email delivery after capture.
 
 ## Run
 
@@ -28,8 +28,8 @@ Dev and production bind to `127.0.0.1`. Open the kiosk in a second browser windo
 1. In **Camera setup**, choose a webcam or **Canon tethering**. Save the selection, then open the preview. A webcam needs browser camera permission on localhost.
 2. Choose one of six built-in backgrounds, or upload a JPEG, PNG, or WebP up to 10 MB. Under **Backgrounds for each photo**, keep the **Same background**, **Rotate backgrounds** through the library starting with the active scene, or **Choose per photo** to assign scenes to photos 1, 2, and 3. Save the photo backgrounds to apply the plan to the next session.
 3. Under **Background replacement**, choose **Green screen**, **AI people**, or **Off**. Green screen uses a physical green backdrop and offers color similarity, edge softness, and spill reduction controls. AI people removes the scene behind people without a green screen. Off keeps the camera's original scene. Open the live preview to check the result, then **Save adjustments** to apply it to the kiosk.
-4. In **Email delivery**, enter the sender address, display name, and a Google app password. Customize the subject/message, save, then send a test to an address you control.
-5. Launch the kiosk. Guests have five seconds before photo one, then three seconds between each remaining photo. Photos are saved before email is requested. Guests can retake or download if email is unavailable.
+4. Optionally configure **Backblaze B2** for QR sharing using the instructions below. In **Email delivery**, optionally enter the sender address, display name, and a Google app password. Customize the subject/message, save, then send a test to an address you control.
+5. Launch the kiosk. Guests have five seconds before photo one, then three seconds between each remaining photo. Photos are saved locally before sharing starts. B2 uploads run automatically when enabled; email entry appears when Gmail is configured. Guests can use both when both are configured, or keep local downloads when neither is configured.
 
 The admin refreshes on focus and the gallery has a refresh button. The kiosk picks up saved settings between guests, polling every 15 seconds while idle. A reset waits for fresh settings before enabling another session. Start a fresh session to apply changes made during capture.
 
@@ -138,9 +138,30 @@ The server uses `smtp.gmail.com:465` with TLS and sends the three JPEG attachmen
 
 “Sent” means Gmail accepted the email; it does not guarantee inbox delivery. SMTP errors retain the captured photos and recipient details for review/retry. Successful retries to the same latest recipient are idempotent. Sending to a new recipient keeps previous delivery history. If the server stops during a send, the session is marked interrupted on restart; inspect Gmail’s Sent folder before retrying an uncertain send.
 
+## Backblaze B2 QR sharing
+
+A QR code can open one page showing all three photos. The booth uploads the JPEGs and a small self-contained HTML gallery to the same B2 folder. The QR points directly to that HTML file on Backblaze, where guests can view the photos, open their phone's sharing options for all three, or download the regular JPEG files. Backblaze's [hosted media example](https://www.backblaze.com/docs/cloud-storage-connect-to-backblaze-b2) demonstrates serving a photo viewer directly from a public bucket. The booth needs no public web server, domain, or port forwarding; guests only need internet access.
+
+On supported phones, the gallery prepares the three image files and opens the native share sheet after a tap. If that sheet offers **Save Images** or a photo-library destination, guests can choose it to save all three together. The available actions depend on the phone, browser, and installed apps. The [Web Share standard](https://www.w3.org/TR/web-share/) does not let a website select a destination, inspect which destinations are available, or confirm that images reached the photo library. A successful share is therefore not proof that the photos were saved to the gallery. This flow cannot guarantee one-tap photo-library saving on every iPhone or Android device.
+
+Downloads remain available if native sharing is unsupported, cancelled, or fails. **Download all photos** requests three separate image downloads; the browser may ask guests to allow multiple downloads. Individual download buttons and full-size photos remain available too. On Android, downloaded images go to the browser's default download location and can be found in **Files** or **Downloads**, as described in [Google's Chrome instructions](https://support.google.com/chrome/answer/95759?co=GENIE.Platform%3DAndroid&hl=en); their appearance in a gallery app depends on the device. Guests can also open each photo and use their browser's touch-and-hold save action.
+
+1. Create a dedicated B2 bucket with **Public** access (`allPublic`). Private buckets are not supported by this direct-link flow: [public buckets permit downloads without authorization](https://www.backblaze.com/docs/cloud-storage-download-files-with-the-native-api).
+2. Create an application key restricted to that bucket. It needs `listBuckets` and `writeFiles` capabilities. `listBuckets` lets the app verify the configured bucket and its public access; a bucket restriction still requires the app to specify that bucket when [checking its settings](https://www.backblaze.com/apidocs/b2-list-buckets). If you add a file-name prefix restriction, use `photo-booth/`.
+3. In **Admin → Backblaze B2**, enter the **Key ID**, **Application key**, and **Bucket name**, enable sharing, and save. The secret is stored on the local server; leaving its field blank preserves the saved secret.
+4. Test the connection, then capture a test session. Scan the QR using mobile data on an actual iPhone and Android phone before the event. Check all three previews, the native share sheet, and whether its selected save action really places all three images in the photo library. Also check cancelling the share sheet, individual downloads, and **Download all photos**. Allow multiple downloads if the browser asks. Browser automation cannot verify the phone's native share targets or photo library.
+
+The gallery URL ends in `photo-booth/<random-session-id>/index.html`, with any application-key prefix added before that path. It uses a complete file URL, so no static website index routing is required. HTML is uploaded with its content type and an inline disposition; B2 preserves the [upload content type and download disposition metadata](https://www.backblaze.com/apidocs/b2-upload-file).
+
+When B2 is enabled and configured, each saved session uploads automatically and the QR appears only after the upload finishes. When Gmail is also configured, the email box remains available beside the QR. Email still sends the three JPEG attachments independently of B2. Failed uploads keep the local photos and offer a retry; local downloads and configured email delivery remain available.
+
+**These are public links.** Random session folders make links difficult to guess, but anyone who has a link can view and share the photos. The gallery contains no recipient email address or credentials. There is no guest password or automatic link expiry. Disabling B2 sharing does not revoke existing links. Manage deletion and retention in Backblaze, including any old file versions or partially completed uploads; deleting local photos does not remove cloud copies. Use a dedicated event bucket and agree on a retention policy before sharing guest photos.
+
+The local server needs internet access to upload. Once uploaded, the gallery remains available from B2 while the booth is offline or switched off, subject to your bucket access, retention, and account limits. A real B2 upload and phone download check requires your own account; automated tests use mocked B2 responses and do not upload guest photos.
+
 ## Local data
 
-`.data/` contains the studio settings, normalized background uploads, captured JPEGs, recipient addresses, and server-side Gmail app password. It is excluded from Git and build tracing. The app creates directories with mode `0700` and files with mode `0600`; the password is stored locally and is never returned by an API. Back up this folder if you need to preserve your event. Do not share it or commit it.
+`.data/` contains the studio settings, normalized background uploads, captured JPEGs, recipient addresses, B2 sharing status/URLs, and server-side Gmail and B2 secrets. It is excluded from Git and build tracing. The app creates directories with mode `0700` and files with mode `0600`; secrets are stored locally and are never returned by an API. Back up this folder if you need to preserve your event. Do not share it or commit it. Enabling B2 also creates the public cloud copies described above.
 
 All API routes require a local host and reject cross-origin browser requests. This is a local studio, with no remote login or multi-operator access model. Guest configuration responses exclude gallery photos, recipients, delivery history, and sender settings. Do not expose the server on a public or shared network.
 
