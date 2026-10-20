@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Synthetic USB camera for isolated UI tests. Never select this for a real booth.
-import { appendFile, copyFile } from "node:fs/promises";
+import { appendFile, copyFile, readFile } from "node:fs/promises";
+import { appendFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -17,6 +18,13 @@ if (
 }
 
 const args = process.argv.slice(2);
+if (process.env.STILL_TEST_COMMAND_LOG) {
+  await appendFile(process.env.STILL_TEST_COMMAND_LOG, `${JSON.stringify(args)}\n`);
+}
+if ((args.includes("--capture-preview") || args.includes("--capture-movie")) && process.env.STILL_TEST_PREVIEW_ERROR === "1") {
+  console.error("SYNTHETIC TEST: preview unavailable; manual retry required.");
+  process.exit(1);
+}
 if (args.includes("--auto-detect")) {
   console.log("Model                          Port");
   console.log("----------------------------------------------------------");
@@ -25,6 +33,52 @@ if (args.includes("--auto-detect")) {
   console.log(
     "SYNTHETIC TEST CAMERA: Canon EOS 5D Mark IV fixture; no USB hardware is accessed.",
   );
+} else if (args.includes("--capture-movie")) {
+  if (!args.includes("--stdout")) {
+    console.error("Synthetic movie preview requires --stdout.");
+    process.exit(2);
+  }
+  const frame = await readFile(new URL("./synthetic-green-screen.jpg", import.meta.url));
+  console.error("SYNTHETIC TEST LIVE VIEW: fixture JPEGs only; no USB hardware is accessed.");
+  const logLive = (event) => {
+    if (process.env.STILL_TEST_LIVE_LOG) {
+      appendFileSync(process.env.STILL_TEST_LIVE_LOG, `${JSON.stringify({
+        event, timestamp: Date.now(), pid: process.pid, synthetic: true,
+      })}\n`);
+    }
+  };
+  let lastFrameLog = 0;
+  let stopped = false;
+  logLive("started");
+  const emitFrame = () => {
+    if (!process.stdout.writableNeedDrain) {
+      process.stdout.write(frame);
+      if (Date.now() - lastFrameLog >= 1000) {
+        lastFrameLog = Date.now();
+        logLive("frame");
+      }
+    }
+  };
+  const interval = setInterval(emitFrame, 100);
+  const finish = (code) => {
+    logLive("stopped");
+    process.exit(code);
+  };
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    clearInterval(interval);
+    process.stdout.end(() => finish(0));
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  process.stdout.once("error", (error) => {
+    clearInterval(interval);
+    if (error.code === "EPIPE") finish(0);
+    console.error(error.message);
+    finish(1);
+  });
+  emitFrame();
 } else if (
   args.includes("--capture-preview") ||
   args.includes("--capture-image-and-download")

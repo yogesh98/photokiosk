@@ -87,6 +87,7 @@ export function ChromaSettings({
   const modelGroupId = useId();
   const accelerationGroupId = useId();
   const draftChroma = { ...chroma, enabled: backgroundMode === "green-screen" };
+  const canonPreview = settings.camera.mode === "canon";
   const recordPerformance = useCallback((value: PreviewPerformance | null) => {
     if (!preview || backgroundMode !== "ai" ||
       (value && (value.model !== aiModel || value.acceleration !== aiAcceleration))) return;
@@ -244,7 +245,7 @@ export function ChromaSettings({
             <h3 id={`${modelGroupId}-benchmark`}>Compare on this computer</h3>
             <span aria-live="polite">
               {!preview
-                ? "Open live preview to measure"
+                ? canonPreview ? "Open preview controls, then start live preview" : "Open live preview to measure"
                 : !performance || performance.samples < 5
                   ? "Waiting for camera and warm-up frames…"
                   : "Measuring live preview"}
@@ -303,8 +304,9 @@ export function ChromaSettings({
           </div>
           <p>
             Frame times include AI and background compositing; lower is faster.
-            Preview is capped at 12 FPS, and Canon supplies about one frame per second,
-            so compare processing times as well as the picture.
+            {canonPreview
+              ? "Start Canon live preview explicitly in the preview controls. Use the measured preview FPS, frame times, and picture to compare settings."
+              : "Preview is capped at 12 FPS, so compare processing times as well as the picture."}
             Keep the same camera, lighting, and pose for each model and acceleration setting.
             Compare before saving; these measurements aren’t saved.
           </p>
@@ -370,7 +372,7 @@ export function ChromaSettings({
               setRuntime(null);
             }}
           >
-            {preview ? "Close live preview" : "Open live preview"}
+            {canonPreview ? preview ? "Close preview controls" : "Open preview controls" : preview ? "Close live preview" : "Open live preview"}
             <Expand size={14} />
           </button>
           <button
@@ -391,28 +393,29 @@ export function CameraSettings({
   settings,
   background,
   camera,
+  cameraChecked,
   busy,
   onSave,
   onConnect,
-  onCheck,
 }: {
   settings: KioskSettings;
   background?: Background;
   camera: CameraState;
+  cameraChecked: boolean;
   busy: boolean;
   onSave: SaveSettings;
   onConnect: (value: boolean) => void;
-  onCheck: () => Promise<void>;
 }) {
   const [draft, setDraft] = useState(settings.camera);
   const [preview, setPreview] = useState(false);
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState("");
+  const canonPreview = draft.mode === "canon";
   const previewStatus = useCallback(
     (status: { ready: boolean }) => {
-      onConnect(status.ready);
-      if (status.ready)
+      onConnect(draft.mode === "browser" && status.ready);
+      if (draft.mode === "browser" && status.ready)
         navigator.mediaDevices
           ?.enumerateDevices()
           .then((items) =>
@@ -420,7 +423,7 @@ export function CameraSettings({
           )
           .catch(() => {});
     },
-    [onConnect],
+    [draft.mode, onConnect],
   );
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -438,7 +441,6 @@ export function CameraSettings({
       setError((e as Error).message);
     } finally {
       setApplying(false);
-      if (draft.mode === "canon") void onCheck();
     }
   }
   return (
@@ -492,16 +494,17 @@ export function CameraSettings({
                     <small>Full-frame DSLR · USB tethered</small>
                   </div>
                   <Status good={camera.connected}>
-                    {camera.connected ? "Connected" : "Not connected"}
+                    {!cameraChecked ? "Not checked" : camera.connected ? "Last check: connected" : "Not connected"}
                   </Status>
                 </div>
                 <div className="soft-note">
                   <Usb size={18} />
                   <p>
-                    {camera.connected
-                      ? "Your camera is connected. Close other camera apps before starting a session."
-                      : camera.error ||
-                        "Connect the camera by USB, turn it on, and close EOS Utility. Install gphoto2 on the studio computer to enable direct tethering."}
+                    {!cameraChecked
+                      ? "Connect the camera by USB, turn it on, and close EOS Utility. Use Check connection when you are ready. Live view starts only when you choose Start live preview."
+                      : camera.connected
+                        ? "The camera was connected at the last check. Choose Start live preview to begin live view, and Stop live preview when you are finished."
+                        : camera.error || "Connect the camera by USB, then use Check connection. Install gphoto2 on the studio computer to enable direct tethering."}
                   </p>
                 </div>
                 <div className="fields-three">
@@ -608,7 +611,7 @@ export function CameraSettings({
         <div className="section-heading">
           <div>
             <h2>Find your frame</h2>
-            <p>The view your guests will see.</p>
+            <p>{canonPreview ? "Start live preview when you are ready to frame the shot." : "The view your guests will see."}</p>
           </div>
           <span className="live-label">
             <span />
@@ -636,7 +639,7 @@ export function CameraSettings({
                   className="button light"
                   onClick={() => setPreview(true)}
                 >
-                  Connect camera
+                  {canonPreview ? "Open preview controls" : "Connect camera"}
                   <ArrowUpRight size={16} />
                 </button>
               </div>
@@ -661,7 +664,7 @@ export function CameraSettings({
               onConnect(false);
             }}
           >
-            Close preview
+            {canonPreview ? "Close preview controls" : "Close preview"}
             <X size={13} />
           </button>
         )}

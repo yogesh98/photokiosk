@@ -3,7 +3,7 @@
 A local photo booth with green-screen or on-device AI background replacement and a USB camera. Built with Next.js 16, React, and TypeScript.
 
 - **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, background replacement, camera settings, Backblaze B2 sharing, Gmail, and the gallery with recipients and delivery history.
-- **Kiosk:** [http://127.0.0.1:3000/kiosk](http://127.0.0.1:3000/kiosk). Live background replacement, a five-second countdown, three photos with three-second intervals, review/retake, and optional QR sharing and email delivery after capture.
+- **Kiosk:** [http://127.0.0.1:3000/kiosk](http://127.0.0.1:3000/kiosk). Camera preview with background replacement, a five-second countdown, three photos with three-second intervals, review/retake, and optional QR sharing and email delivery after capture.
 
 ## Run
 
@@ -25,7 +25,7 @@ Dev and production bind to `127.0.0.1`. Open the kiosk in a second browser windo
 
 ## Set up the booth
 
-1. In **Camera setup**, choose a webcam or **Canon tethering**. Save the selection, then open the preview. A webcam needs browser camera permission on localhost.
+1. In **Camera setup**, choose a webcam or **Canon tethering**. Save the selection, then open the preview. A webcam needs browser camera permission on localhost. For Canon, press **Start live preview**; opening the preview panel alone does not operate the camera.
 2. Choose one of six built-in backgrounds, or upload a JPEG, PNG, or WebP up to 10 MB. Under **Backgrounds for each photo**, keep the **Same background**, **Rotate backgrounds** through the library starting with the active scene, or **Choose per photo** to assign scenes to photos 1, 2, and 3. Save the photo backgrounds to apply the plan to the next session.
 3. Under **Background replacement**, choose **Green screen**, **AI people**, or **Off**. Green screen uses a physical green backdrop and offers color similarity, edge softness, and spill reduction controls. AI people removes the scene behind people without a green screen. Off keeps the camera's original scene. Open the live preview to check the result, then **Save adjustments** to apply it to the kiosk.
 4. Optionally configure **Backblaze B2** for QR sharing using the instructions below. In **Email delivery**, optionally enter the sender address, display name, and a Google app password. Customize the subject/message, save, then send a test to an address you control.
@@ -47,7 +47,7 @@ The kiosk displays each photo's scene before starting its countdown and uses tha
 
 Inference runs locally, with no account, API key, cloud service, or dedicated GPU required. All three models are bundled locally, and matching MediaPipe/ONNX browser runtimes are copied from pinned npm dependencies during setup/build. Only the selected model/runtime loads. Camera frames remain on this computer. After dependencies are installed, AI background replacement also works without internet access. CPU inference uses WebAssembly in a browser worker and does not require cross-origin isolation headers.
 
-Use a current desktop Chrome or Edge browser for the booth. AI preview is capped at 12 frames per second and processes one frame at a time; slower machines naturally run below that cap. Every saved photo gets its own mask from its frozen, cropped and mirrored frame, with the output retaining the existing resolution (up to 2400 pixels wide). Browser webcams and Canon captures use the same processing. Green screen and Off do not load the AI model.
+Use a current desktop Chrome or Edge browser for the booth. AI preview is capped at 12 frames per second and processes one frame at a time; slower machines naturally run below that cap. Canon live preview starts only after an explicit button press, then processes frames from its persistent preview stream. Every saved photo gets its own mask from its frozen, cropped and mirrored frame, with the output retaining the existing resolution (up to 2400 pixels wide). Browser webcams and Canon captures use the same processing. Green screen and Off do not load the AI model.
 
 These models are intended for people; they are not general object-background removers. Even lighting and separation from the background help. Fine hair, held props, distant people, and crowded groups can have imperfect edges; a well-lit green screen can give cleaner results. A larger model is not always better for a particular scene. Check quality and responsiveness on the actual event computer before use. If AI cannot load or process a frame, the preview shows an error and blocks capture until retry succeeds or you select another mode/model.
 
@@ -59,7 +59,7 @@ Open **Backgrounds**, select **AI people**, choose a model and acceleration sett
 
 The preview reports the active runtime and any fallback reason as soon as initialization finishes. The comparison table starts reporting after three warm-up frames and five measured frames. Switch models or acceleration while the preview is open to compare them using the same camera, background, lighting, and pose. Each model, selected acceleration, and runtime has a separate row. Previous measurements remain in the table until you save or leave the panel.
 
-Average frame time and 95th-percentile time measure AI processing plus compositing at the preview resolution, using a rolling window of up to 30 frames. Lower is faster. Preview FPS is the actual output rate, including camera delays and the 12 FPS cap; it is not the model's maximum possible speed. Canon preview is about one FPS, so use frame processing time to distinguish models on that camera. Full-resolution capture and JPEG saving can take longer than preview processing. Inspect hair, hands, props, and groups as well as the timing numbers, then **Save adjustments** to use the chosen model in the kiosk.
+Average frame time and 95th-percentile time measure AI processing plus compositing at the preview resolution, using a rolling window of up to 30 frames. Lower is faster. Preview FPS is the actual output rate, including camera delays and the 12 FPS AI cap; it is not the model's maximum possible speed. Canon's frame rate also depends on its USB preview stream, so compare frame processing time as well as observed FPS. Full-resolution capture and JPEG saving can take longer than preview processing. Inspect hair, hands, props, and groups as well as the timing numbers, then **Save adjustments** to use the chosen model in the kiosk.
 
 ### GPU acceleration on Intel Ubuntu and Apple Silicon
 
@@ -114,7 +114,11 @@ Connect a USB data cable, switch the camera on, select still-photo mode and Manu
 
 Choose **Canon tethering** in Admin. ISO, aperture, and shutter speed are applied to the connected camera before preferences are saved, so a rejected setting remains visible in the form. Disconnected preferences can be saved; connect the Canon and save again to apply exposure. Lens limitations or camera mode can prevent a requested setting.
 
-The DSLR preview uses JPEG preview frames at up to one frame per second. The shutter takes a separate high-resolution photograph, composites it with the same crop as the preview, and saves a JPEG up to 2400 pixels wide. Originals remain on the camera card. Browser-camera preview runs at up to 24 fps.
+Press **Start live preview** to begin Canon live view, and **Stop live preview** to end it. The app runs one persistent `gphoto2 --capture-movie --stdout` process and displays its streamed preview JPEGs; it does not launch another camera process or take a full-resolution still for each preview frame. This is the [preview-streaming mode documented by gphoto](https://gphoto.sourceforge.io/doc/remote/), and the Canon must stay in still-photo mode. The mirror can move when live view starts or stops, rather than cycling for each displayed frame.
+
+Opening a panel, reconnecting USB, and camera errors never start or restart Canon live view automatically. Changing backgrounds, AI models, or processing settings does not restart the camera stream. If the preview fails, correct the problem and press **Start live preview** again. Browser frame requests read the latest cached stream image; they cannot start the camera. The owned stream also stops if its browser stops requesting frames.
+
+Canon live preview stays active throughout each countdown. At each shutter, the kiosk holds the last displayed frame, stops live view, and takes one high-resolution session photo. After successful photos 1 and 2, it restores live view within that same guest session and waits for a fresh processed frame before starting the next three-second countdown. It never resumes automatically after photo 3, cancellation, or an error; the next guest must explicitly start live preview again. Each saved photograph is composited with the preview's crop and saved as a JPEG up to 2400 pixels wide, with originals retained on the camera card. Webcam preview remains continuous at up to 24 fps, or 12 fps with AI background replacement.
 
 Cancelling a session aborts pending capture requests and skips queued shutter commands. The server waits for its own camera process to exit before releasing the camera or cleaning up temporary files. A shutter that already fired cannot be undone; cancelled frames are discarded by the kiosk.
 
@@ -126,9 +130,11 @@ gphoto2 --summary
 gphoto2 --capture-preview
 ```
 
+On macOS, Preview can keep the camera import helper `ptpcamerad` holding the Canon even with no visible import window. Fully quit **Preview (Command-Q)**, Photos, Image Capture, and EOS Utility, reconnect the camera, then retry `gphoto2 --summary`; the [gphoto FAQ](https://gphoto.sourceforge.io/doc/manual/FAQ.html) describes the built-in PTP tool blocking USB access. A USB claim failure is an operating-system access problem before exposure can be validated; distinguish it from a rejected ISO/aperture/shutter value and from a PTP communication timeout.
+
 Copy `.env.example` to `.env.local` if gphoto2 needs an explicit path, such as `GPHOTO2_PATH=/opt/homebrew/bin/gphoto2`, or to choose a different data directory. Restart the server after changing environment variables.
 
-Canon compatibility is implemented and tested with a simulated CLI. A final live check with the physical camera is still required before an event. USB ownership, lens behavior, operating-system permissions, and camera firmware can affect tethering.
+Canon compatibility is implemented and tested with a simulated CLI. The persistent live-view stream and its mirror behavior still require a check with the physical camera before an event, after the operator explicitly reconnects it. USB ownership, lens behavior, operating-system permissions, and camera firmware can affect tethering.
 
 ## Gmail
 
@@ -197,6 +203,6 @@ GPHOTO2_PATH="$PWD/tests/fixtures/fake-gphoto.mjs" \
 npm start -- --port 3001
 ```
 
-Open `http://127.0.0.1:3001/admin`, choose Canon tethering, save, then open `/kiosk` on that port. Capture a session and check that three composited photos appear in review and in the admin gallery. Keep Gmail unconfigured for this test. The normal booth’s `.data` folder is unaffected.
+Open `http://127.0.0.1:3001/admin`, choose Canon tethering, save, then open `/kiosk` on that port. Press **Start live preview**, start a session, and check that three composited photos appear in review and in the admin gallery. Keep Gmail unconfigured for this test. The normal booth’s `.data` folder is unaffected.
 
 A browser acceptance run verified live chroma preview, the five-second first countdown, three shutter events separated by three-second countdowns, three saved 2400 × 1600 JPEGs, thumbnail review, missing-Gmail handling, next-guest reset, capture cancellation, and admin gallery visibility. This synthetic check supplements the unit tests; it does not replace a live check with your Canon and Gmail account.

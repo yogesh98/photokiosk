@@ -11,7 +11,9 @@ import { createPersonSegmenter, type PersonSegmenter } from "@/lib/person-segmen
 import type { AiRuntimeInfo } from "@/lib/ai-models";
 import { createPreviewPerformanceTracker, type PreviewPerformance } from "@/lib/preview-performance";
 import { requestCanonPhoto, waitForPreview } from "./capture-camera";
-import type { CapturePhoto } from "./capture-sequence";
+import { createCanonLiveView } from "./canon-live-view";
+import { captureCanonWithLiveView } from "./canon-capture";
+import { abortableDelay, type CapturePhoto } from "./capture-sequence";
 
 export type { PreviewPerformance } from "@/lib/preview-performance";
 
@@ -26,6 +28,7 @@ interface LivePreviewProps {
   settings: KioskSettings;
   background?: Background;
   enabled?: boolean;
+  allowCanonPreview?: boolean;
   className?: string;
   onCaptureReady?: (capture: CapturePhoto | null, backgroundUrl?: string) => void;
   onStatusChange?: (status: PreviewStatus) => void;
@@ -49,18 +52,11 @@ function readableCameraError(error: unknown): string {
     : "The camera could not be started. Please try again.";
 }
 
-async function responseError(
-  response: Response,
-  fallback: string,
-): Promise<Error> {
-  const body = await response.json().catch(() => null);
-  return new Error(body?.error || fallback);
-}
-
 export function LivePreview({
   settings,
   background,
   enabled = true,
+  allowCanonPreview = true,
   className = "",
   onCaptureReady,
   onStatusChange,
@@ -79,6 +75,11 @@ export function LivePreview({
   const renderFlightRef = useRef<Promise<void> | null>(null);
   const sourceAbortRef = useRef<AbortController | null>(null);
   const previewFlightRef = useRef<Promise<void> | null>(null);
+  const canonFrameRef = useRef<ImageBitmap | null>(null);
+  const canonLiveRef = useRef<ReturnType<typeof createCanonLiveView> | null>(null);
+  const canonMayResumeRef = useRef(false);
+  const canonFrameVersionRef = useRef(0);
+  const renderedCanonFrameRef = useRef(0);
   const capturingRef = useRef(false);
   const performanceCallbackRef = useRef(onPerformanceChange);
   const runtimeCallbackRef = useRef(onRuntimeChange);
@@ -92,6 +93,11 @@ export function LivePreview({
     error: string | null;
   }>({ loaded: false, error: null });
   const [retry, setRetry] = useState(0);
+  const [canonStarting, setCanonStarting] = useState(false);
+  const [hasCanonFrame, setHasCanonFrame] = useState(false);
+  const [processingFailed, setProcessingFailed] = useState(false);
+  const [canonLiveActive, setCanonLiveActive] = useState(false);
+  const [canonTakingPhoto, setCanonTakingPhoto] = useState(false);
   const backgroundUrl = settings.backgroundMode === "off" ? undefined : background?.url;
   const backgroundError =
     backgroundStatus.url === backgroundUrl ? backgroundStatus.error : null;
@@ -110,6 +116,101 @@ export function LivePreview({
     retry,
   ]);
   const sourceReady = cameraReady && readySourceKey === sourceKey;
+  const isCanon = settings.camera.mode === "canon";
+
+  const beginCanonLiveView = useCallback((live: ReturnType<typeof createCanonLiveView>, signal?: AbortSignal) => {
+    setCanonStarting(true);
+    setCanonLiveActive(true);
+    setCameraError(null);
+    setCameraReady(false);
+    const flight = live.start(signal);
+    previewFlightRef.current = flight;
+    void flight.finally(() => {
+      if (previewFlightRef.current === flight) {
+        previewFlightRef.current = null;
+        setCanonStarting(false);
+        setCanonLiveActive(false);
+      }
+    });
+  }, []);
+
+  function startCanonLiveView() {
+    if (!enabled || !isCanon || !allowCanonPreview || !canonLiveRef.current ||
+      capturingRef.current || previewFlightRef.current || document.visibilityState !== "visible") return;
+    canonMayResumeRef.current = true;
+    beginCanonLiveView(canonLiveRef.current);
+  }
+
+  async function stopCanonLiveView() {
+    canonMayResumeRef.current = false;
+    await canonLiveRef.current?.stop();
+    sourceRef.current = null;
+    canonFrameRef.current?.close();
+    canonFrameRef.current = null;
+    setHasCanonFrame(false);
+    setCameraReady(false);
+    setCanonLiveActive(false);
+  }
+
+  // A button starts live view. An active photo sequence may restore it between
+  // successful shots; scene/model changes and effect cleanup never start it.
+  useEffect(() => {
+    let current = true;
+    canonMayResumeRef.current = false;
+    queueMicrotask(() => {
+      if (current) {
+        setHasCanonFrame(false);
+        setCanonStarting(false);
+        setCanonLiveActive(false);
+      }
+    });
+    if (!enabled || !isCanon) return () => { current = false; };
+    const live = createCanonLiveView({
+      onFrame: async (blob, signal) => {
+        const next = await createImageBitmap(blob);
+        if (!current || signal.aborted) { next.close(); return; }
+        const previous = canonFrameRef.current;
+        canonFrameRef.current = next;
+        canonFrameVersionRef.current++;
+        sourceRef.current = next;
+        sourceSizeRef.current = { width: next.width, height: next.height };
+        previous?.close();
+        setHasCanonFrame(true);
+        setCanonStarting(false);
+      },
+      onError: (error) => {
+        if (!current) return;
+        canonMayResumeRef.current = false;
+        sourceRef.current = null;
+        setCameraReady(false);
+        setCanonStarting(false);
+        setCameraError(readableCameraError(error));
+      },
+    });
+    canonLiveRef.current = live;
+    const stopWhenHidden = () => {
+      if (document.visibilityState === "hidden") {
+        canonMayResumeRef.current = false;
+        void live.stop();
+      }
+    };
+    const stopOnPageHide = () => {
+      canonMayResumeRef.current = false;
+      void live.stop();
+    };
+    document.addEventListener("visibilitychange", stopWhenHidden);
+    window.addEventListener("pagehide", stopOnPageHide);
+    return () => {
+      current = false;
+      canonMayResumeRef.current = false;
+      document.removeEventListener("visibilitychange", stopWhenHidden);
+      window.removeEventListener("pagehide", stopOnPageHide);
+      void live.stop();
+      if (canonLiveRef.current === live) canonLiveRef.current = null;
+      canonFrameRef.current?.close();
+      canonFrameRef.current = null;
+    };
+  }, [enabled, isCanon]);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -163,7 +264,6 @@ export function LivePreview({
     const video = videoRef.current;
     sourceAbortRef.current = controller;
     let stream: MediaStream | null = null;
-    let frame: ImageBitmap | null = null;
     let animation = 0;
     let lastRenderTime = 0;
     let lastSource: CanvasImageSource | null = null;
@@ -192,13 +292,15 @@ export function LivePreview({
       clearPerformance();
       runtimeCallbackRef.current?.(segmenter.runtime);
     };
-    let pollingTimeout: ReturnType<typeof setTimeout> | undefined;
-    sourceRef.current = null;
-    sourceSizeRef.current = { width: 0, height: 0 };
+    const retained = settings.camera.mode === "canon" ? canonFrameRef.current : null;
+    sourceRef.current = retained;
+    sourceSizeRef.current = retained ? { width: retained.width, height: retained.height } : { width: 0, height: 0 };
     queueMicrotask(() => {
       if (!controller.signal.aborted) {
         setCameraReady(false);
         setCameraError(null);
+        setCanonStarting(false);
+        setProcessingFailed(false);
         performanceCallbackRef.current?.(null);
         runtimeCallbackRef.current?.(null);
       }
@@ -208,6 +310,7 @@ export function LivePreview({
     const render = async (time = 0) => {
       if (controller.signal.aborted) return;
       const source = sourceRef.current;
+      const frameVersion = canonFrameVersionRef.current;
       const { width, height } = sourceSizeRef.current;
       const currentSettings = settingsRef.current;
       // Parent benchmark updates must not trigger another Canon inference.
@@ -243,6 +346,7 @@ export function LivePreview({
           lastSource = source;
           lastSettingsKey = settingsKey;
           lastBackground = backdrop;
+          renderedCanonFrameRef.current = frameVersion;
           setCameraReady(true);
           setReadySourceKey(sourceKey);
           setRenderedBackgroundUrl(sceneUrl);
@@ -259,6 +363,7 @@ export function LivePreview({
           if (!controller.signal.aborted) {
             renderFailed = true;
             setCameraError(readableCameraError(error));
+            setProcessingFailed(true);
             setCameraReady(false);
             clearPerformance(true);
           }
@@ -313,53 +418,6 @@ export function LivePreview({
       void render();
     }
 
-    async function pollCanon() {
-      if (controller.signal.aborted) return;
-      if (!capturingRef.current) {
-        const flight = (async () => {
-          const response = await fetch(`/api/camera/preview?t=${Date.now()}`, {
-            cache: "no-store",
-            signal: AbortSignal.any([
-              controller.signal,
-              AbortSignal.timeout(20000),
-            ]),
-          });
-          if (!response.ok)
-            throw await responseError(
-              response,
-              "Canon live view is unavailable. Check the USB connection and camera power.",
-            );
-          const nextFrame = await createImageBitmap(await response.blob());
-          if (controller.signal.aborted) {
-            nextFrame.close();
-            return;
-          }
-          const previousFrame = frame;
-          frame = nextFrame;
-          sourceRef.current = frame;
-          sourceSizeRef.current = { width: frame.width, height: frame.height };
-          previousFrame?.close();
-          if (!renderFailed) setCameraError(null);
-        })();
-        previewFlightRef.current = flight;
-        try {
-          await flight;
-        } catch (error) {
-          if (!controller.signal.aborted) {
-            sourceRef.current = null;
-            setCameraReady(false);
-            setCameraError(readableCameraError(error));
-            clearPerformance(true);
-          }
-        } finally {
-          if (previewFlightRef.current === flight)
-            previewFlightRef.current = null;
-        }
-      }
-      if (!controller.signal.aborted)
-        pollingTimeout = setTimeout(pollCanon, 1000);
-    }
-
     async function start() {
       if (settings.backgroundMode === "ai") {
         segmenter = await createPersonSegmenter(settings.aiModel, controller.signal, settings.aiAcceleration);
@@ -372,13 +430,13 @@ export function LivePreview({
       }
       if (settings.camera.mode === "canon") {
         void render();
-        void pollCanon();
       } else await startBrowser();
     }
     void start().catch((error) => {
       stream?.getTracks().forEach((track) => track.stop());
       if (!controller.signal.aborted) {
         setCameraError(readableCameraError(error));
+        setProcessingFailed(true);
         clearPerformance(true);
       }
     });
@@ -386,13 +444,11 @@ export function LivePreview({
     return () => {
       controller.abort();
       cancelAnimationFrame(animation);
-      clearTimeout(pollingTimeout);
       segmenter?.close();
       if (segmenterRef.current === segmenter) segmenterRef.current = null;
       stream?.getTracks().forEach((track) => track.stop());
       if (video) video.srcObject = null;
       sourceRef.current = null;
-      frame?.close();
     };
   }, [
     enabled,
@@ -406,7 +462,7 @@ export function LivePreview({
   ]);
 
   const capture = useCallback(
-    async (guestSignal?: AbortSignal) => {
+    async (guestSignal?: AbortSignal, options?: { resumePreview: boolean }) => {
       const sourceSignal = sourceAbortRef.current?.signal;
       const signal = AbortSignal.any([
         ...(sourceSignal ? [sourceSignal] : []),
@@ -429,60 +485,109 @@ export function LivePreview({
       const backdrop = backgroundRef.current;
       const segmenter = segmenterRef.current;
       let photo: ImageBitmap | null = null;
-      try {
-        await waitForPreview(renderFlightRef.current, signal);
-        signal.throwIfAborted();
-        if (currentSettings.camera.mode === "canon") {
-          const bytes = await requestCanonPhoto(
-            signal,
-            previewFlightRef.current,
-          );
-          photo = await createImageBitmap(bytes);
+      const takePhoto = async () => {
+        try {
+          await waitForPreview(renderFlightRef.current, signal);
           signal.throwIfAborted();
-          await composite({
-            source: photo, sourceWidth: photo.width, sourceHeight: photo.height,
-            output, width: Math.min(2400, photo.width), settings: currentSettings,
-            background: backdrop, segmenter, signal,
-          });
-        } else {
-          const source = sourceRef.current;
-          const size = sourceSizeRef.current;
-          const stream = videoRef.current?.srcObject as MediaStream | null;
-          if (
-            !source ||
-            !size.width ||
-            !size.height ||
-            !stream
-              ?.getVideoTracks()
-              .some((track) => track.readyState === "live") ||
-            (videoRef.current?.readyState ?? 0) < 2
-          )
-            throw new Error(
-              "The camera is no longer available. Please reconnect and try again.",
+          if (currentSettings.camera.mode === "canon") {
+            const bytes = await requestCanonPhoto(
+              signal,
+              previewFlightRef.current,
             );
-          await composite({
-            source, sourceWidth: size.width, sourceHeight: size.height,
-            output, width: Math.min(2400, size.width), settings: currentSettings,
-            background: backdrop, segmenter, signal,
-          });
+            photo = await createImageBitmap(bytes);
+            signal.throwIfAborted();
+            await composite({
+              source: photo, sourceWidth: photo.width, sourceHeight: photo.height,
+              output, width: Math.min(2400, photo.width), settings: currentSettings,
+              background: backdrop, segmenter, signal,
+            });
+          } else {
+            const source = sourceRef.current;
+            const size = sourceSizeRef.current;
+            const stream = videoRef.current?.srcObject as MediaStream | null;
+            if (
+              !source ||
+              !size.width ||
+              !size.height ||
+              !stream
+                ?.getVideoTracks()
+                .some((track) => track.readyState === "live") ||
+              (videoRef.current?.readyState ?? 0) < 2
+            )
+              throw new Error(
+                "The camera is no longer available. Please reconnect and try again.",
+              );
+            await composite({
+              source, sourceWidth: size.width, sourceHeight: size.height,
+              output, width: Math.min(2400, size.width), settings: currentSettings,
+              background: backdrop, segmenter, signal,
+            });
+          }
+          signal.throwIfAborted();
+          if (segmenter) runtimeCallbackRef.current?.(segmenter.runtime);
+          return output.toDataURL("image/jpeg", 0.92);
+        } finally {
+          photo?.close();
+          capturingRef.current = false;
         }
-        signal.throwIfAborted();
-        if (segmenter) runtimeCallbackRef.current?.(segmenter.runtime);
-        return output.toDataURL("image/jpeg", 0.92);
+      };
+      if (currentSettings.camera.mode !== "canon") return takePhoto();
+
+      const live = canonLiveRef.current;
+      const isCurrent = () => Boolean(
+        live && canonLiveRef.current === live && canonMayResumeRef.current &&
+        sourceAbortRef.current?.signal === sourceSignal &&
+        document.visibilityState === "visible",
+      );
+      let minimumFrameVersion = 0;
+      setCanonTakingPhoto(true);
+      setCameraReady(false);
+      try {
+        if (!live) throw new Error("Start Canon live preview before taking a photo.");
+        return await captureCanonWithLiveView({
+          signal,
+          hasNextPhoto: options?.resumePreview === true,
+          isCurrent,
+          stopLiveView: () => live.stop(),
+          capture: takePhoto,
+          startLiveView: () => {
+            minimumFrameVersion = canonFrameVersionRef.current + 1;
+            beginCanonLiveView(live, signal);
+          },
+          waitUntilReady: async (signal) => {
+            await live.whenReady();
+            for (let elapsed = 0; elapsed < 30000; elapsed += 25) {
+              signal.throwIfAborted();
+              if (!isCurrent()) throw new DOMException("The photo session is no longer active.", "AbortError");
+              if (renderedCanonFrameRef.current >= minimumFrameVersion) return;
+              await abortableDelay(25, signal);
+            }
+            throw new Error("The Canon live preview could not resume. Start preview again to retry.");
+          },
+        });
       } finally {
-        photo?.close();
         capturingRef.current = false;
+        setCanonTakingPhoto(false);
       }
     },
-    [sourceReady, backgroundLoading, backgroundError, renderedBackgroundUrl, backgroundUrl],
+    [sourceReady, backgroundLoading, backgroundError, renderedBackgroundUrl, backgroundUrl, beginCanonLiveView],
   );
 
   const error = cameraError || backgroundError;
-  const ready = enabled && sourceReady && !backgroundLoading && !error && renderedBackgroundUrl === backgroundUrl;
-  const loading = enabled && !error && !ready;
+  useEffect(() => {
+    if (isCanon && error) {
+      canonMayResumeRef.current = false;
+      void canonLiveRef.current?.stop();
+    }
+  }, [isCanon, error]);
+  const ready = enabled && sourceReady && !backgroundLoading && !error && renderedBackgroundUrl === backgroundUrl &&
+    (!isCanon || (canonLiveActive && !canonTakingPhoto));
+  const waitingForCanonPreview = enabled && isCanon && !canonLiveActive && !canonStarting && !error &&
+    !canonTakingPhoto;
+  const loading = enabled && !error && !ready && !waitingForCanonPreview;
   const label =
     settings.camera.mode === "canon"
-      ? "Canon tethered camera"
+      ? "Canon live preview"
       : "Browser camera";
 
   useEffect(() => {
@@ -532,16 +637,16 @@ export function LivePreview({
         ref={canvasRef}
         width={960}
         height={640}
-        aria-label="Live camera preview with your selected background"
+        aria-label={isCanon ? "Canon live preview with your selected background" : "Live camera preview with your selected background"}
         style={{
           position: "absolute",
           width: "100%",
           height: "100%",
           objectFit: "cover",
-          opacity: sourceReady ? 1 : 0,
+          opacity: sourceReady || (isCanon && hasCanonFrame) ? 1 : 0,
         }}
       />
-      {(!enabled || loading || error) && (
+      {(!enabled || error || (!canonTakingPhoto && (loading || waitingForCanonPreview))) && (
         <div
           style={{
             position: "absolute",
@@ -583,13 +688,15 @@ export function LivePreview({
             <p style={{ fontSize: 16, fontWeight: 600, margin: "0 0 7px" }}>
               {error
                 ? "Let’s get the preview ready"
+                : waitingForCanonPreview
+                  ? "Canon live preview is paused"
                 : loading
                   ? backgroundLoading && sourceReady
                     ? "Setting the scene…"
                     : settings.backgroundMode === "ai"
                       ? "Preparing AI and camera…"
                       : "Connecting your camera…"
-                  : "Live preview is paused"}
+                  : "Preview is paused"}
             </p>
             {error && (
               <>
@@ -606,7 +713,11 @@ export function LivePreview({
                 </p>
                 <button
                   type="button"
-                  onClick={() => setRetry((value) => value + 1)}
+                  disabled={isCanon && (!allowCanonPreview || canonStarting)}
+                  onClick={() => {
+                    if (isCanon && !processingFailed) startCanonLiveView();
+                    else setRetry((value) => value + 1);
+                  }}
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -620,19 +731,34 @@ export function LivePreview({
                     fontSize: 13,
                   }}
                 >
-                  <RefreshCw size={14} /> Try again
+                  <RefreshCw size={14} /> {isCanon ? processingFailed ? "Restart preview processing" : "Start live preview again" : "Try again"}
+                </button>
+              </>
+            )}
+            {waitingForCanonPreview && (
+              <>
+                <p style={{ fontSize: 13, lineHeight: 1.65, color: "#66685e", margin: "0 0 15px" }}>
+                  Start a continuous live-view connection when you’re ready. The mirror may move once on entry; preview does not take still photos. It stops on error and waits for you to start it again.
+                </p>
+                <button type="button" disabled={!allowCanonPreview} onClick={() => startCanonLiveView()} style={{ border: 0, borderRadius: 8, padding: "10px 16px", background: "#58684b", color: "white", cursor: "pointer" }}>
+                  Start live preview
                 </button>
               </>
             )}
             {loading && (
               <p style={{ fontSize: 13, color: "#66685e", margin: 0 }}>
                 {settings.camera.mode === "canon"
-                  ? "Keep your camera switched on and connected by USB."
+                  ? canonStarting ? "Starting Canon live view…" : "Processing your live preview…"
                   : "Your browser may ask for camera permission."}
               </p>
             )}
           </div>
         </div>
+      )}
+      {isCanon && enabled && canonLiveActive && (
+        <button type="button" disabled={!allowCanonPreview} onClick={() => void stopCanonLiveView()} style={{ position: "absolute", bottom: 12, right: 12, zIndex: 2, border: "1px solid #d9dbd3", borderRadius: 8, padding: "9px 12px", background: "#f8f7f4", color: "#353a30", cursor: allowCanonPreview ? "pointer" : "default", opacity: allowCanonPreview ? 1 : 0.55 }}>
+          <RefreshCw size={13} style={{ display: "inline", marginRight: 7 }} /> Stop live preview
+        </button>
       )}
     </div>
   );

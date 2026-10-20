@@ -86,6 +86,7 @@ export function StudioAdmin() {
     available: false,
     model: null,
   });
+  const [cameraChecked, setCameraChecked] = useState(false);
   const [browserReady, setBrowserReady] = useState(false);
   const [modal, setModal] = useState<
     "upload" | "preview" | "help" | "event" | null
@@ -146,6 +147,8 @@ export function StudioAdmin() {
         model: null,
         error: (e as Error).message,
       });
+    } finally {
+      setCameraChecked(true);
     }
   }, []);
   useEffect(() => {
@@ -167,11 +170,6 @@ export function StudioAdmin() {
       .catch((e) => {
         if (current) setLoadError(e.message);
       });
-    api<CameraState>("/api/camera")
-      .then((result) => {
-        if (current) setCamera(result);
-      })
-      .catch(() => {});
     return () => {
       current = false;
     };
@@ -605,9 +603,11 @@ export function StudioAdmin() {
                         settings.camera.mode === "canon"
                           ? "Canon EOS 5D Mark IV"
                           : "Your camera",
-                      note: cameraConnected
-                        ? "Connected and ready"
-                        : "Let’s get connected",
+                      note: settings.camera.mode === "canon" && !cameraChecked
+                        ? "Check connection when ready"
+                        : cameraConnected
+                          ? settings.camera.mode === "canon" ? "Last check: connected" : "Connected and ready"
+                          : "Let’s get connected",
                       good: cameraConnected,
                     },
                     {
@@ -957,10 +957,10 @@ export function StudioAdmin() {
                 settings={settings}
                 background={previewBackground}
                 camera={camera}
+                cameraChecked={cameraChecked}
                 busy={busy}
                 onSave={saveSettings}
                 onConnect={setBrowserReady}
-                onCheck={checkCamera}
               />
               <ChromaSettings
                 key={JSON.stringify([settings.backgroundMode, settings.aiModel, settings.aiAcceleration, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}

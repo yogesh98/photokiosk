@@ -7,11 +7,13 @@ test("takes exactly three photos after 5, 3, and 3 second countdowns", async () 
   const captureTimes = [];
   let clock = 0;
   let number = 0;
+  const previewResumes = [];
   const controller = new AbortController();
   const result = await runCaptureSequence({
     signal: controller.signal,
-    capture: async (signal) => {
+    capture: async (signal, options) => {
       assert.equal(signal, controller.signal);
+      previewResumes.push(options.resumePreview);
       calls.push("capture");
       captureTimes.push(clock);
       return `photo${++number}`;
@@ -43,6 +45,7 @@ test("takes exactly three photos after 5, 3, and 3 second countdowns", async () 
     [0, 3],
   ]);
   assert.equal(calls.filter((call) => call === "wait").length, 11);
+  assert.deepEqual(previewResumes, [true, true, false]);
 });
 
 test("a failed camera capture stops the sequence instead of inventing photos", async () => {

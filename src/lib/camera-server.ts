@@ -1,4 +1,8 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { CameraError, recognizedCameraError } from "./camera-errors";
+import { GphotoLiveView, type LiveGphotoFactory, type LiveViewOptions } from "./camera-live";
+export { CameraError } from "./camera-errors";
 import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,17 +21,6 @@ export interface CameraConfiguration {
   shutterSpeed: string;
 }
 
-export class CameraError extends Error {
-  constructor(
-    message: string,
-    public readonly code = "camera_error",
-    public readonly status = 503,
-    public readonly details?: string,
-  ) {
-    super(message);
-    this.name = "CameraError";
-  }
-}
 
 interface CommandOptions {
   timeoutMs: number;
@@ -152,18 +145,23 @@ export function runGphoto(
         stderr: Buffer.concat(stderr).toString("utf8"),
       };
       if (code !== 0) {
-        const detail = (result.stderr || result.stdout).trim().slice(0, 1500);
+        const diagnostic = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+        const detail = diagnostic.slice(0, 1500);
         const busy =
-          /claim.*(?:USB|device)|(?:camera|device).*busy|PTP.*busy/i.test(
-            detail,
+          /could not\s+(?:claim\b|detach\s+(?:the\s+)?kernel\s+driver)|claim[^\r\n]*(?:USB|device|interface)|(?:camera|device)[^\r\n]*busy|PTP[^\r\n]*busy/i.test(
+            diagnostic,
           );
+        const timedOut =
+          /PTP[^\r\n]*(?:timeout|timed out)|(?:timeout|timed out)[^\r\n]*(?:reading|writing|port)/i.test(diagnostic);
         return reject(
           new CameraError(
             busy
-              ? "Another app is using the camera. Close other camera apps and reconnect it."
-              : "The camera command failed. Check the camera and its settings, then try again.",
-            busy ? "camera_in_use" : "camera_command",
-            503,
+              ? "Another app or the macOS camera import helper may be using the camera. Close Photos, Preview, Image Capture, and EOS Utility, then reconnect the camera."
+              : timedOut
+                ? "The camera timed out while communicating over USB. Wake the camera, check its USB cable, then reconnect it and try again."
+                : "The camera command failed. Check the camera and its settings, then try again.",
+            busy ? "camera_in_use" : timedOut ? "camera_timeout" : "camera_command",
+            !busy && timedOut ? 504 : 503,
             detail || CONNECT_HELP,
           ),
         );
@@ -176,6 +174,25 @@ export function runGphoto(
 interface DetectedCamera {
   model: string;
   port: string;
+}
+
+interface PreviewRequest {
+  promise: Promise<Buffer>;
+  controller: AbortController;
+  subscribers: number;
+}
+
+interface LiveSession {
+  id: string;
+  camera: DetectedCamera;
+  stream: GphotoLiveView;
+  lease?: ReturnType<typeof setTimeout>;
+}
+
+export interface CameraLiveOptions {
+  factory?: LiveGphotoFactory;
+  stream?: LiveViewOptions;
+  leaseMs?: number;
 }
 
 export function parseDetectedCameras(output: string): DetectedCamera[] {
@@ -236,12 +253,16 @@ export class CameraController {
   private statusCache: { value: CameraStatus; at: number } | null = null;
   private statusRequest: Promise<CameraStatus> | null = null;
   private previewCache: { bytes: Buffer; at: number } | null = null;
-  private previewRequest: Promise<Buffer> | null = null;
+  private previewRequest: PreviewRequest | null = null;
+  private previewFailure: CameraError | null = null;
+  private live: LiveSession | null = null;
+  private liveStarting = false;
+  private lastLive: { id: string; failure: CameraError | null } | null = null;
 
-  constructor(private readonly run: GphotoRunner = runGphoto) {}
+  constructor(private readonly run: GphotoRunner = runGphoto, private readonly liveOptions: CameraLiveOptions = {}) {}
 
   private async exclusive<T>(
-    purpose: "preview" | "capture" | "configure" | "status",
+    purpose: "preview" | "capture" | "configure" | "status" | "live",
     work: () => Promise<T>,
   ): Promise<T> {
     // Preview requests must never build a queue of obsolete frames in front of
@@ -267,9 +288,8 @@ export class CameraController {
 
   private rememberError(error: unknown): CameraError {
     const failure =
-      error instanceof CameraError
-        ? error
-        : new CameraError("The camera could not complete this operation.");
+      recognizedCameraError(error) ??
+      new CameraError("The camera could not complete this operation.");
     if (
       failure.status !== 400 &&
       failure.status !== 409 &&
@@ -298,7 +318,7 @@ export class CameraController {
         available: true,
         model: camera.model,
         details:
-          "USB tether ready on this computer. Live preview refreshes up to once per second.",
+          "USB tether ready on this computer. Start Canon live preview with the preview button.",
       },
       at: Date.now(),
     };
@@ -340,11 +360,13 @@ export class CameraController {
   }
 
   async getStatus(): Promise<CameraStatus> {
+    if (this.live) return this.liveStatus();
     if (this.statusCache && Date.now() - this.statusCache.at < 5000)
       return this.statusCache.value;
     if (this.statusRequest) return this.statusRequest;
     this.statusRequest = this.exclusive("status", async () => {
       try {
+        if (this.live) return this.liveStatus();
         const camera = await this.detect();
         // Auto-detect alone does not prove the USB connection can be claimed.
         await this.run([...this.cameraArgs(camera), "--summary"], {
@@ -367,6 +389,103 @@ export class CameraController {
       this.statusRequest = null;
     });
     return this.statusRequest;
+  }
+
+  private liveStatus(): CameraStatus {
+    const session = this.live!;
+    return {
+      connected: Boolean(session.stream.latest && !session.stream.stopping && !session.stream.ended),
+      available: true,
+      model: session.camera.model,
+      details: session.stream.stopping ? "Canon live preview is stopping." : "Canon live preview holds one USB connection.",
+    };
+  }
+
+  private renewLiveLease(session: LiveSession) {
+    clearTimeout(session.lease);
+    session.lease = setTimeout(() => { void session.stream.stop(); }, this.liveOptions.leaseMs ?? 5000);
+    session.lease.unref();
+  }
+
+  private expiredLive(): CameraError {
+    return new CameraError("Canon live preview has ended. Use Start live preview to begin a new session.", "camera_live_expired", 410);
+  }
+
+  private validateLiveId(id: unknown): asserts id is string {
+    if (typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(id))
+      throw new CameraError("A valid Canon live preview session ID is required.", "invalid_configuration", 400);
+  }
+
+  async startLive(signal?: AbortSignal): Promise<{ id: string; model: string }> {
+    assertCameraRequestActive(signal);
+    if (this.live || this.liveStarting || this.pending > 0)
+      throw new CameraError("The camera already has an active operation or live preview. Stop it before starting another preview.", "camera_busy", 409);
+    this.liveStarting = true;
+    try {
+      return await this.exclusive("live", async () => {
+        assertCameraRequestActive(signal);
+        const detected = this.selected ?? await this.detect(signal);
+        assertCameraRequestActive(signal);
+        let stream: GphotoLiveView;
+        try { stream = new GphotoLiveView(this.cameraArgs(detected), this.liveOptions.factory, this.liveOptions.stream); }
+        catch (error) { throw this.rememberError(error); }
+        const session: LiveSession = { id: randomUUID(), camera: detected, stream };
+        this.live = session;
+        void stream.closed.then(() => {
+          clearTimeout(session.lease);
+          this.lastLive = { id: session.id, failure: stream.failure };
+          if (this.live === session) this.live = null;
+          if (stream.failure && stream.failure.code !== "camera_cancelled") this.rememberError(stream.failure);
+        });
+        const abort = () => { void stream.stop(cancelledCameraRequest()); };
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) abort();
+        try {
+          await stream.ready;
+          assertCameraRequestActive(signal);
+          if (stream.stopping || stream.ended) throw stream.failure ?? this.expiredLive();
+          this.rememberConnected(detected);
+          this.renewLiveLease(session);
+          return { id: session.id, model: detected.model };
+        } catch (error) {
+          await stream.stop();
+          throw this.rememberError(error);
+        } finally {
+          signal?.removeEventListener("abort", abort);
+        }
+      });
+    } finally {
+      this.liveStarting = false;
+    }
+  }
+
+  liveFrame(id: unknown): Buffer {
+    this.validateLiveId(id);
+    const session = this.live;
+    if (!session || session.id !== id) {
+      if (this.lastLive?.id === id && this.lastLive.failure) throw this.lastLive.failure;
+      throw this.expiredLive();
+    }
+    if (session.stream.ended || session.stream.stopping) throw session.stream.failure ?? this.expiredLive();
+    if (!session.stream.latest) throw new CameraError("Canon live preview is still starting.", "camera_busy", 409);
+    this.renewLiveLease(session);
+    return session.stream.latest;
+  }
+
+  async stopLive(id: unknown): Promise<void> {
+    this.validateLiveId(id);
+    if (!this.live || this.live.id !== id) {
+      if (!this.live && this.lastLive?.id === id) return;
+      throw this.expiredLive();
+    }
+    await this.stopLiveForOperation();
+  }
+
+  private async stopLiveForOperation(): Promise<void> {
+    const session = this.live;
+    if (!session) return;
+    clearTimeout(session.lease);
+    await session.stream.stop();
   }
 
   private async readJpeg(filename: string): Promise<Buffer> {
@@ -438,7 +557,38 @@ export class CameraController {
     }
   }
 
-  async preview(): Promise<Buffer> {
+  private subscribePreview(request: PreviewRequest, signal?: AbortSignal): Promise<Buffer> {
+    request.subscribers++;
+    return new Promise((resolve, reject) => {
+      let cancelled = false;
+      const abort = () => {
+        if (cancelled) return;
+        cancelled = true;
+        request.subscribers--;
+        if (request.subscribers === 0) request.controller.abort();
+      };
+      signal?.addEventListener("abort", abort, { once: true });
+      if (signal?.aborted) abort();
+      // A cancelled subscriber waits until the owned process has exited and its
+      // temporary files are gone. Other active subscribers retain their frame.
+      void request.promise.then(
+        (bytes) => cancelled ? reject(cancelledCameraRequest()) : resolve(bytes),
+        (error) => reject(cancelled ? cancelledCameraRequest() : error),
+      ).finally(() => {
+        signal?.removeEventListener("abort", abort);
+        if (!cancelled) request.subscribers--;
+      });
+    });
+  }
+
+  async preview(signal?: AbortSignal, options: { retry?: boolean } = {}): Promise<Buffer> {
+    assertCameraRequestActive(signal);
+    if (this.live) {
+      if (this.live.stream.stopping || !this.live.stream.latest)
+        throw new CameraError("Canon live preview is starting or stopping. Wait before requesting a snapshot.", "camera_busy", 409);
+      return this.live.stream.latest;
+    }
+    if (this.previewFailure && !options.retry) throw this.previewFailure;
     if (this.pending > 0 && !this.previewRequest) {
       throw new CameraError(
         "The camera is busy taking a photo or applying settings.",
@@ -446,21 +596,38 @@ export class CameraController {
         409,
       );
     }
-    if (this.previewRequest) return this.previewRequest;
+    if (this.previewRequest) {
+      if (this.previewRequest.controller.signal.aborted)
+        throw new CameraError("The preview is stopping. Wait a moment before requesting another snapshot.", "camera_busy", 409);
+      return this.subscribePreview(this.previewRequest, signal);
+    }
+    if (options.retry) {
+      this.previewFailure = null;
+      this.previewCache = null;
+    }
     if (this.previewCache && Date.now() - this.previewCache.at < 1000)
       return this.previewCache.bytes;
-    this.previewRequest = this.exclusive("preview", async () => {
-      try {
-        const bytes = await this.captureFile(true);
-        this.previewCache = { bytes, at: Date.now() };
-        return bytes;
-      } catch (error) {
-        throw this.rememberError(error);
-      }
-    }).finally(() => {
-      this.previewRequest = null;
-    });
-    return this.previewRequest;
+    const controller = new AbortController();
+    const request: PreviewRequest = {
+      controller,
+      subscribers: 0,
+      promise: this.exclusive("preview", async () => {
+        try {
+          const bytes = await this.captureFile(true, controller.signal);
+          this.previewCache = { bytes, at: Date.now() };
+          return bytes;
+        } catch (error) {
+          const failure = this.rememberError(error);
+          if (failure.code !== "camera_cancelled" && failure.status !== 409)
+            this.previewFailure = failure;
+          throw failure;
+        }
+      }).finally(() => {
+        if (this.previewRequest === request) this.previewRequest = null;
+      }),
+    };
+    this.previewRequest = request;
+    return this.subscribePreview(request, signal);
   }
 
   async capture(signal?: AbortSignal): Promise<Buffer> {
@@ -468,6 +635,8 @@ export class CameraController {
     return this.exclusive("capture", async () => {
       // Cancellation while waiting for a shared preview or another capture must
       // skip this shutter entirely. A shutter already fired cannot be undone.
+      assertCameraRequestActive(signal);
+      await this.stopLiveForOperation();
       assertCameraRequestActive(signal);
       this.previewCache = null;
       try {
@@ -482,6 +651,7 @@ export class CameraController {
     const settings = validateCameraConfiguration(value);
     return this.exclusive("configure", async () => {
       try {
+        await this.stopLiveForOperation();
         const camera = this.selected ?? (await this.detect());
         await this.run(
           [
@@ -525,9 +695,8 @@ export const camera = (globalCamera.__photokioskCamera ??=
 
 export function cameraErrorResponse(error: unknown): Response {
   const failure =
-    error instanceof CameraError
-      ? error
-      : new CameraError("The camera operation failed.");
+    recognizedCameraError(error) ??
+    new CameraError("The camera operation failed.");
   return Response.json(
     { error: failure.message, code: failure.code, details: failure.details },
     {

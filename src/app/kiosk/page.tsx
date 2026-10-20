@@ -303,9 +303,9 @@ export default function KioskPage() {
           );
           setPreparingPhoto(false);
         },
-        capture: (signal) => {
+        capture: (signal, options) => {
           if (!preparedCapture) throw new Error("Please wait for the next scene to load.");
-          return preparedCapture(signal);
+          return preparedCapture(signal, options);
         },
         onCountdown: (seconds, number) => {
           setCountdown(seconds);
@@ -509,6 +509,7 @@ export default function KioskPage() {
                   settings={studio.settings}
                   background={background}
                   enabled={!reviewing && !settingsRefreshing}
+                  allowCanonPreview={stage === "idle" && !settingsRefreshing}
                   onCaptureReady={onCaptureReady}
                   onStatusChange={onCameraStatus}
                 />
@@ -577,7 +578,7 @@ export default function KioskPage() {
                   </span>
                   <span>
                     {studio.settings.camera.mode === "canon"
-                      ? "Canon · USB tethered"
+                      ? "Canon · USB live view"
                       : "Browser camera"}
                     <span className="kiosk-caption-divider">/</span>3 photos,
                     all you

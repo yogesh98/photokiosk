@@ -42,3 +42,24 @@ export async function requestCanonPhoto(
   signal.throwIfAborted();
   return photo;
 }
+
+/** One user-requested preview frame. Never poll, retry, or fire the still shutter. */
+export async function requestCanonPreview(
+  signal: AbortSignal,
+  request: typeof fetch = fetch,
+): Promise<Blob> {
+  signal.throwIfAborted();
+  const response = await request("/api/camera/preview", {
+    method: "POST",
+    cache: "no-store",
+    signal,
+  });
+  signal.throwIfAborted();
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.error || "The Canon preview snapshot could not be loaded. Check the camera, then retry when ready.");
+  }
+  const photo = await response.blob();
+  signal.throwIfAborted();
+  return photo;
+}

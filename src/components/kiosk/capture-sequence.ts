@@ -1,4 +1,7 @@
-export type CapturePhoto = (signal?: AbortSignal) => Promise<string>;
+export type CapturePhoto = (
+  signal?: AbortSignal,
+  options?: { resumePreview: boolean },
+) => Promise<string>;
 
 export interface CaptureSequenceOptions {
   signal: AbortSignal;
@@ -48,7 +51,7 @@ export async function runCaptureSequence({
     }
     signal.throwIfAborted();
     onCountdown(0, photoNumber);
-    const photo = await capture(signal);
+    const photo = await capture(signal, { resumePreview: photoNumber < 3 });
     signal.throwIfAborted();
     photos.push(photo);
     onPhoto(photo, photoNumber);
