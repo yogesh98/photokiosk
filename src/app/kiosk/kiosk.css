@@ -1101,6 +1101,69 @@
   text-decoration: none;
 }
 
+/* Keep the portrait booth together instead of stretching gaps to the edges. */
+@media (min-width: 700px) and (min-height: 1000px) and (orientation: portrait) {
+  .kiosk-shell:is(.is-idle, .is-capturing) {
+    --k-stage-gap: clamp(40px, 3.33dvh, 64px);
+    --k-instructions-height: 46px;
+    --k-controls-height: calc(
+      clamp(120px, 17vw, 184px) + clamp(18px, 2.4vw, 26px) + var(--k-instructions-height)
+    );
+
+    display: grid;
+    grid-template-columns: minmax(0, 936px);
+    grid-template-rows: auto auto minmax(var(--k-controls-height), auto);
+    justify-content: center;
+    align-content: center;
+    row-gap: var(--k-stage-gap);
+    padding-block: max(32px, 3.33dvh);
+  }
+
+  .kiosk-shell.is-idle > .kiosk-loading {
+    grid-area: 1 / 1 / -1 / -1;
+    width: 100%;
+  }
+
+  .kiosk-shell:is(.is-idle, .is-capturing) > .kiosk-heading {
+    grid-area: 1 / 1;
+    width: 100%;
+    margin: 0;
+  }
+
+  /* The logo and countdown heading share the marquee's original height. */
+  .kiosk-shell.is-capturing > .kiosk-header {
+    grid-area: 1 / 1;
+    align-self: start;
+    width: 100%;
+    min-height: 0;
+    padding-top: 0;
+  }
+
+  .kiosk-shell.is-capturing > .kiosk-heading {
+    padding-top: clamp(88px, 10.4vw, 112px);
+  }
+
+  .kiosk-shell:is(.is-idle, .is-capturing) > .kiosk-experience {
+    grid-area: 2 / 1;
+    width: 100%;
+    margin-top: 0;
+  }
+
+  .kiosk-shell:is(.is-idle, .is-capturing) > .kiosk-controls {
+    grid-area: 3 / 1;
+    width: 100%;
+    min-height: var(--k-controls-height);
+    margin-top: 0;
+    padding-top: 0;
+  }
+
+  @media (max-width: 799px) {
+    .kiosk-shell:is(.is-idle, .is-capturing) {
+      --k-instructions-height: 106px;
+    }
+  }
+}
+
 .still-camera-spinner {
   animation: kiosk-spin 1.2s linear infinite;
 }

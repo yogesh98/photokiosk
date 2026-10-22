@@ -3,7 +3,6 @@
 /* Captured data URLs and local upload URLs already contain their original image data. */
 /* eslint-disable @next/next/no-img-element */
 
-import Link from "next/link";
 import {
   useCallback,
   useEffect,
@@ -18,13 +17,10 @@ import {
   Camera,
   Check,
   Download,
-  Expand,
-  Image as ImageIcon,
   LoaderCircle,
   Mail,
   RefreshCw,
   Send,
-  Settings2,
   X,
 } from "lucide-react";
 import type { PhotoSession, StudioData } from "@/lib/kiosk-types";
@@ -383,17 +379,6 @@ export default function KioskPage() {
     });
   }
 
-  async function toggleFullscreen() {
-    try {
-      if (document.fullscreenElement) await document.exitFullscreen();
-      else await document.documentElement.requestFullscreen();
-    } catch {
-      setError(
-        "Fullscreen is unavailable in this browser. You can keep using the photo booth here.",
-      );
-    }
-  }
-
   const reviewing =
     stage === "review" || stage === "sending" || stage === "saving";
   const isCapturing = stage === "capturing";
@@ -413,8 +398,8 @@ export default function KioskPage() {
 
   return (
     <main className={`kiosk-shell is-${stage}`}>
-      <header className="kiosk-header">
-        {studio && stage !== "idle" && (
+      {studio && stage !== "idle" && (
+        <header className="kiosk-header">
           <div className="kiosk-brand">
             <img
               src="/brand/kdc-logo.png"
@@ -423,19 +408,8 @@ export default function KioskPage() {
               height={576}
             />
           </div>
-        )}
-        <p className="kiosk-event">
-          {studio?.settings.eventName || "Photo booth"}
-        </p>
-        <button
-          type="button"
-          className="kiosk-icon-button"
-          aria-label="Toggle fullscreen"
-          onClick={toggleFullscreen}
-        >
-          <Expand size={28} strokeWidth={2} />
-        </button>
-      </header>
+        </header>
+      )}
 
       {!studio ? (
         <section className="kiosk-loading">
@@ -583,16 +557,10 @@ export default function KioskPage() {
                   />
                 )}
                 {!reviewing && (
-                  <>
-                    <div className="kiosk-live-badge">
-                      <span className={cameraStatus.ready ? "is-ready" : ""} />
-                      {cameraStatus.ready ? "Live" : "Camera starting"}
-                    </div>
-                    <div className="kiosk-scene-label">
-                      <ImageIcon size={26} strokeWidth={2} />
-                      {background?.name || "Your original scene"}
-                    </div>
-                  </>
+                  <div className="kiosk-live-badge">
+                    <span className={cameraStatus.ready ? "is-ready" : ""} />
+                    {cameraStatus.ready ? "Live" : "Camera starting"}
+                  </div>
                 )}
                 {isCapturing && (
                   <div
@@ -623,25 +591,6 @@ export default function KioskPage() {
                   </div>
                 )}
               </div>
-              {!reviewing && (
-                <div className="kiosk-camera-caption">
-                  <span>
-                    <span
-                      className={`kiosk-small-dot ${cameraStatus.ready ? "" : "is-muted"}`}
-                    />
-                    {cameraStatus.ready
-                      ? "You’re in the shot"
-                      : cameraStatus.loading
-                        ? "Getting the camera ready"
-                        : "Waiting for the camera"}
-                  </span>
-                  <span>
-                    {studio.settings.camera.mode === "canon"
-                      ? "Canon camera"
-                      : "Webcam"}
-                  </span>
-                </div>
-              )}
               {reviewing && (
                 <div
                   className="kiosk-review-thumbnails"
@@ -848,12 +797,6 @@ export default function KioskPage() {
           )}
         </>
       )}
-
-      <footer className="kiosk-footer">
-        <Link href="/" aria-label="Back to studio">
-          <Settings2 size={20} /> Studio
-        </Link>
-      </footer>
 
       {showEmailSheet && (
         <div
