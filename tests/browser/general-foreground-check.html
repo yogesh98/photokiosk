@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>General foreground acceptance check</title>
+<style>
+  body { font: 16px/1.5 system-ui; margin: 32px auto; padding: 0 20px; max-width: 1100px; color: #18201a; background: #f6f7f5; }
+  button, input, select { font: inherit; margin: 8px; } button { padding: 8px 18px; }
+  article { background: white; border: 1px solid #ccd1cb; padding: 18px; margin: 18px 0; border-radius: 8px; }
+  canvas { width: 320px; max-width: 100%; height: auto; margin: 8px; }
+  #status { white-space: pre-wrap; } h2 { font-size: 19px; }
+</style>
+<h1>General foreground acceptance check</h1>
+<p>Choose a public reference image with a person or object. Runs each real local model through the same worker and local API as the kiosk. Check that the subject remains visible over the purple test background, including props and hair. Images stay on this computer and are not saved.</p>
+<label>Reference image <input id="image" type="file" accept="image/*"></label>
+<label>Acceleration <select id="acceleration"><option value="cpu">CPU</option><option value="auto">Auto</option><option value="gpu">GPU</option></select></label>
+<button id="run" type="button">Check all three models</button>
+<p id="status" role="status">Choose an image, then run the check.</p>
+<div id="results"></div>
+<script type="module">
+const models = ['birefnet-lite', 'birefnet-general', 'birefnet-matting'];
+const picker = document.querySelector('#image');
+const acceleration = document.querySelector('#acceleration');
+const button = document.querySelector('#run');
+const status = document.querySelector('#status');
+const results = document.querySelector('#results');
+let worker;
+let cancel;
+
+function client(model) {
+  worker = new Worker('/workers/person-segmentation.worker.js', { type: 'module' });
+  let pending;
+  const settle = (error, result) => {
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    const { resolve, reject } = pending;
+    pending = null;
+    if (error) reject(error); else resolve(result);
+  };
+  cancel = () => { worker?.terminate(); settle(new Error('Check closed.')); };
+  worker.onmessage = ({ data }) => {
+    if (data.type === 'error') settle(new Error(data.message));
+    else if (data.type === 'ready' || data.type === 'result') settle(null, data);
+  };
+  worker.onerror = (event) => settle(new Error(event.message || 'Worker crashed.'));
+  const request = (body, transfer = []) => new Promise((resolve, reject) => {
+    pending = { resolve, reject, timer: setTimeout(() => settle(new Error('Worker timed out.')), 200_000) };
+    worker.postMessage(body, transfer);
+  });
+  return {
+    initialize: () => request({ type: 'initialize', model, acceleration: acceleration.value }),
+    segment: async (frame, id) => {
+      const bitmap = await createImageBitmap(frame);
+      return request({ type: 'segment', id, bitmap }, [bitmap]);
+    },
+  };
+}
+
+button.addEventListener('click', async () => {
+  if (!picker.files[0]) { status.textContent = 'Choose an image first.'; return; }
+  button.disabled = picker.disabled = acceleration.disabled = true;
+  results.replaceChildren();
+  let image;
+  try {
+    image = await createImageBitmap(picker.files[0]);
+    const frame = document.createElement('canvas');
+    frame.width = frame.height = 1024;
+    frame.getContext('2d').drawImage(image, 0, 0, 1024, 1024);
+    for (const model of models) {
+      status.textContent = `Loading ${model}…`;
+      const modelClient = client(model);
+      const ready = await modelClient.initialize();
+      status.textContent = `Processing ${model} on ${ready.runtime.label}…`;
+      const started = performance.now();
+      const result = await modelClient.segment(frame, 1);
+      const ms = performance.now() - started;
+      const alpha = new Float32Array(result.confidence);
+      if (result.width !== 1024 || result.height !== 1024 || result.kind !== 'alpha' ||
+          alpha.length !== 1024 * 1024 || alpha.some((v) => !Number.isFinite(v) || v < 0 || v > 1)) throw new Error('Invalid foreground mask.');
+      const matte = document.createElement('canvas');
+      matte.width = matte.height = 1024;
+      const mask = matte.getContext('2d').createImageData(1024, 1024);
+      const foreground = document.createElement('canvas');
+      foreground.width = foreground.height = 1024;
+      const fg = foreground.getContext('2d');
+      fg.drawImage(frame, 0, 0);
+      for (let i = 0; i < alpha.length; i++) mask.data.set([255,255,255,Math.round(alpha[i]*255)], i*4);
+      matte.getContext('2d').putImageData(mask, 0, 0);
+      fg.globalCompositeOperation = 'destination-in';
+      fg.drawImage(matte, 0, 0);
+      fg.globalCompositeOperation = 'destination-over';
+      fg.fillStyle = '#b19de5';
+      fg.fillRect(0, 0, 1024, 1024);
+      const article = document.createElement('article');
+      const heading = document.createElement('h2');
+      heading.textContent = `${model} — ${result.runtime.label} — ${ms.toFixed(0)} ms`;
+      article.append(heading, foreground);
+      results.append(article);
+      worker.terminate();
+    }
+    status.textContent = 'PASS: all three models returned valid full-frame alpha masks. Inspect subject retention and background removal in each result.';
+  } catch (error) {
+    status.textContent = `FAIL: ${error.message}`;
+  } finally {
+    worker?.terminate();
+    image?.close();
+    button.disabled = picker.disabled = acceleration.disabled = false;
+  }
+});
+window.addEventListener('pagehide', () => cancel?.());
+</script>
+</html>

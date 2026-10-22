@@ -28,7 +28,8 @@ import {
   X,
 } from "lucide-react";
 import { LivePreview, type PreviewPerformance } from "@/components/kiosk/live-preview";
-import { AI_ACCELERATIONS, AI_MODELS, type AiRuntimeInfo } from "@/lib/ai-models";
+import { AI_ACCELERATIONS, AI_MODELS, isBackgroundReferenceModel, isNativeForegroundModel, type AiRuntimeInfo } from "@/lib/ai-models";
+import { getBackgroundReferenceCameraKey, isBackgroundReferenceCompatible } from "@/lib/background-reference-camera";
 import { previewPerformanceKey } from "@/lib/preview-performance";
 import { saveCameraSetup } from "@/lib/camera-setup";
 import type {
@@ -60,7 +61,7 @@ const BACKGROUND_OPTIONS: Array<{
     label: "Green screen",
     detail: "Use a physical green backdrop.",
   },
-  { value: "ai", label: "AI people", detail: "No green screen needed." },
+  { value: "ai", label: "AI background", detail: "Keep people or general foreground subjects." },
   { value: "off", label: "Off", detail: "Keep the camera’s original scene." },
 ];
 
@@ -80,6 +81,13 @@ export function ChromaSettings({
   const [aiModel, setAiModel] = useState(settings.aiModel);
   const [aiAcceleration, setAiAcceleration] = useState(settings.aiAcceleration);
   const [preview, setPreview] = useState(false);
+  const [referencePreview, setReferencePreview] = useState(false);
+  const [capturedReference, setCapturedReference] = useState<KioskSettings["backgroundReference"]>(null);
+  const [referenceCameraReady, setReferenceCameraReady] = useState(false);
+  const [referenceSaving, setReferenceSaving] = useState(false);
+  const [referenceError, setReferenceError] = useState("");
+  const referenceCaptureRef = useRef<(() => Promise<Blob>) | null>(null);
+  const referenceRequestRef = useRef<AbortController | null>(null);
   const [runtime, setRuntime] = useState<AiRuntimeInfo | null>(null);
   const [performance, setPerformance] = useState<PreviewPerformance | null>(null);
   const [measurements, setMeasurements] = useState<Record<string, PreviewPerformance>>({});
@@ -87,7 +95,51 @@ export function ChromaSettings({
   const modelGroupId = useId();
   const accelerationGroupId = useId();
   const draftChroma = { ...chroma, enabled: backgroundMode === "green-screen" };
+  const nativeForeground = isNativeForegroundModel(aiModel);
+  const referenceModel = isBackgroundReferenceModel(aiModel);
+  const backgroundReference = capturedReference && (!settings.backgroundReference ||
+    capturedReference.capturedAt >= settings.backgroundReference.capturedAt)
+    ? capturedReference : settings.backgroundReference;
+  const referenceCompatible = isBackgroundReferenceCompatible(backgroundReference, settings.camera);
   const canonPreview = settings.camera.mode === "canon";
+  const recordReferenceCapture = useCallback((capture: (() => Promise<Blob>) | null) => {
+    referenceCaptureRef.current = capture;
+    setReferenceCameraReady(Boolean(capture));
+  }, []);
+  useEffect(() => () => referenceRequestRef.current?.abort(), []);
+  async function saveReference() {
+    const capture = referenceCaptureRef.current;
+    if (!capture || referenceRequestRef.current) return;
+    const controller = new AbortController();
+    referenceRequestRef.current = controller;
+    setReferenceSaving(true);
+    setReferenceError("");
+    try {
+      const cameraKey = getBackgroundReferenceCameraKey(settings.camera);
+      const file = await capture();
+      controller.signal.throwIfAborted();
+      const body = new FormData();
+      body.set("file", file, "empty-background.png");
+      body.set("cameraKey", cameraKey);
+      const result = await api<{ settings: KioskSettings }>("/api/ai/reference", {
+        method: "POST", body, signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      setCapturedReference(result.settings.backgroundReference);
+      setReferencePreview(false);
+      setReferenceCameraReady(false);
+      setPerformance(null);
+      setRuntime(null);
+    } catch (error) {
+      if (!controller.signal.aborted)
+        setReferenceError(error instanceof Error ? error.message : "The empty background could not be saved. Try again.");
+    } finally {
+      if (referenceRequestRef.current === controller) {
+        referenceRequestRef.current = null;
+        if (!controller.signal.aborted) setReferenceSaving(false);
+      }
+    }
+  }
   const recordPerformance = useCallback((value: PreviewPerformance | null) => {
     if (!preview || backgroundMode !== "ai" ||
       (value && (value.model !== aiModel || value.acceleration !== aiAcceleration))) return;
@@ -118,7 +170,7 @@ export function ChromaSettings({
       <fieldset
         className="background-mode-field"
         aria-describedby={`${modeGroupId}-help`}
-        disabled={busy}
+        disabled={busy || referenceSaving}
       >
         <legend>Background mode</legend>
         <div className="background-mode-options">
@@ -131,6 +183,7 @@ export function ChromaSettings({
                 checked={backgroundMode === mode.value}
                 onChange={() => {
                   setBackgroundMode(mode.value);
+                  setReferencePreview(false);
                   setPerformance(null);
                   setRuntime(null);
                 }}
@@ -148,7 +201,7 @@ export function ChromaSettings({
           aria-live="polite"
         >
           {backgroundMode === "ai"
-            ? "AI runs on this device and works best with people close to the camera in even light. Fine hair and props can have imperfect edges."
+            ? "AI runs on this device without a green screen. Choose a people model or a general foreground model for people, props, and other subjects."
             : backgroundMode === "green-screen"
               ? "Keep your green screen smooth and evenly lit, then adjust the sliders for natural edges."
               : "Background replacement is off. Your photos will keep everything visible in the camera."}
@@ -158,7 +211,7 @@ export function ChromaSettings({
         <fieldset
           className="background-mode-field ai-model-field"
           aria-describedby={`${modelGroupId}-help`}
-          disabled={busy}
+          disabled={busy || referenceSaving}
         >
           <legend>AI model</legend>
           <div className="background-mode-options">
@@ -171,6 +224,8 @@ export function ChromaSettings({
                   checked={aiModel === model.id}
                   onChange={() => {
                     setAiModel(model.id);
+                    setReferencePreview(false);
+                    if (isBackgroundReferenceModel(model.id) && !referenceCompatible) setPreview(false);
                     setPerformance(null);
                     setRuntime(null);
                   }}
@@ -178,9 +233,12 @@ export function ChromaSettings({
                 <span>
                   <strong>{model.label}</strong>
                   <small className="ai-model-name">
-                    {model.name} · {model.id === "modnet"
+                    {model.name} · {model.scope === "people" ? "People" : model.scope === "reference" ? "Empty background reference" : "General foreground"}
+                  </small>
+                  <small>
+                    {model.id === "modnet"
                       ? `up to ${model.inputSize} px`
-                      : `${model.inputSize} × ${model.inputSize}`}
+                      : `${model.inputSize} × ${model.inputHeight ?? model.inputSize}`} · {model.modelSize}
                   </small>
                   <small>{model.description}</small>
                 </span>
@@ -188,9 +246,76 @@ export function ChromaSettings({
             ))}
           </div>
           <p className="background-mode-help" id={`${modelGroupId}-help`}>
-            All models run locally. Try each in live preview on your booth computer;
-            a larger model may handle edges differently but is not always better.
+            All models run locally. General foreground models can retain props and
+            other principal subjects, including unwanted objects. Large models may
+            take several seconds per frame. Compare edges and speed in live preview
+            on your booth computer; a larger model is not always better.
             Save adjustments to use your choice in the kiosk.
+          </p>
+        </fieldset>
+      )}
+      {backgroundMode === "ai" && referenceModel && (
+        <fieldset className="background-mode-field" disabled={busy || referenceSaving}>
+          <legend>Empty background reference</legend>
+          <p className="background-mode-help">
+            Clear everyone from the scene, keep the camera fixed, lock focus and
+            exposure, and keep lighting steady. Capture the empty scene before trying this model.
+            Recapture whenever the camera moves, focus or settings change, or the light changes.
+          </p>
+          <p className="background-mode-help" role="status">
+            {backgroundReference
+              ? referenceCompatible
+                ? `Reference saved ${dateLabel(backgroundReference.capturedAt)}. Ready for this camera.`
+                : "This reference was captured with different camera settings. Capture a new empty background."
+              : "No empty background has been captured for this booth."}
+          </p>
+          {backgroundReference && (
+            <img
+              src={backgroundReference.url}
+              alt="Saved empty camera scene used by the reference background model"
+              width={240}
+              height={160}
+              style={{ maxWidth: "100%", height: "auto", borderRadius: 6 }}
+            />
+          )}
+          <div className="panel-footer">
+            <button
+              className="button light small"
+              onClick={() => {
+                setPreview(false);
+                setReferencePreview(!referencePreview);
+                setReferenceError("");
+                setPerformance(null);
+                setRuntime(null);
+              }}
+            >
+              {referencePreview ? "Close empty-scene camera" : "Open empty-scene camera"}
+              <Camera size={14} />
+            </button>
+            <button
+              className="button dark small"
+              disabled={!referenceCameraReady || !referencePreview || referenceSaving}
+              onClick={() => { void saveReference(); }}
+            >
+              {referenceSaving ? "Saving empty background…" : "Capture empty background"}
+              {referenceSaving ? <Loader2 size={14} /> : <Check size={14} />}
+            </button>
+          </div>
+          {referencePreview && (
+            <div className="chroma-inline-preview">
+              <LivePreview
+                settings={{ ...settings, backgroundMode: "off" }}
+                onReferenceCaptureReady={recordReferenceCapture}
+              />
+              <p>{canonPreview
+                ? "Press Start live preview, then leave the scene empty and capture the reference."
+                : "Leave the scene empty, then capture the reference."}</p>
+            </div>
+          )}
+          {referenceError && <div className="inline-error" role="alert">{referenceError}</div>}
+          <p className="background-mode-help">
+            The reference is saved immediately. Open the processed preview to test it,
+            then save adjustments to use this model in the kiosk.
           </p>
         </fieldset>
       )}
@@ -198,7 +323,7 @@ export function ChromaSettings({
         <fieldset
           className="background-mode-field ai-acceleration-field"
           aria-describedby={`${accelerationGroupId}-help`}
-          disabled={busy}
+          disabled={busy || referenceSaving}
         >
           <legend>AI acceleration</legend>
           <div className="background-mode-options">
@@ -217,21 +342,25 @@ export function ChromaSettings({
                 />
                 <span>
                   <strong>{acceleration.label}</strong>
-                  <small>{acceleration.description}</small>
+                  <small>{nativeForeground && acceleration.id === "auto"
+                    ? "Use local CPU for predictable memory use."
+                    : acceleration.description}</small>
                 </span>
               </label>
             ))}
           </div>
           <p className="background-mode-help" id={`${accelerationGroupId}-help`}>
-            Auto tries GPU first and falls back to CPU. GPU mode reports an error if
-            acceleration is unavailable. The comparison shows which device actually ran.
+            {nativeForeground
+              ? "Auto uses local CPU for predictable memory use. GPU requests native acceleration and reports an error if the model cannot run on it."
+              : "Auto tries GPU first and falls back to CPU. GPU mode reports an error if acceleration is unavailable."}
+            {" "}The comparison shows which device actually ran.
           </p>
         </fieldset>
       )}
-      {preview && (
+      {preview && !(backgroundMode === "ai" && referenceModel && !referenceCompatible) && (
         <div className="chroma-inline-preview">
           <LivePreview
-            settings={{ ...settings, backgroundMode, aiModel, aiAcceleration, chroma: draftChroma }}
+            settings={{ ...settings, backgroundMode, aiModel, aiAcceleration, backgroundReference, chroma: draftChroma }}
             background={backgroundMode === "off" ? undefined : background}
             onPerformanceChange={recordPerformance}
             onRuntimeChange={recordRuntime}
@@ -366,7 +495,9 @@ export function ChromaSettings({
         <div>
           <button
             className="button light small"
+            disabled={referenceSaving || (!preview && backgroundMode === "ai" && referenceModel && !referenceCompatible)}
             onClick={() => {
+              setReferencePreview(false);
               setPreview(!preview);
               setPerformance(null);
               setRuntime(null);
@@ -377,7 +508,7 @@ export function ChromaSettings({
           </button>
           <button
             className="button dark small"
-            disabled={busy}
+            disabled={busy || referenceSaving || (backgroundMode === "ai" && referenceModel && !referenceCompatible)}
             onClick={() => onSave({ backgroundMode, aiModel, aiAcceleration, chroma: draftChroma })}
           >
             Save adjustments

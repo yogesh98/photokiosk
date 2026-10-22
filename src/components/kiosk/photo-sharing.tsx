@@ -36,16 +36,23 @@ export function PhotoSharing({ sharing, busy, error, onRetry }: {
   if (galleryUrl) {
     return (
       <div className="kiosk-share-card">
-        <h3>Scan for all three photos</h3>
-        {qr?.url === galleryUrl ? (
-          <img className="kiosk-share-qr" src={qr.image} alt="QR code to view and download your three photos" width={320} height={320} />
-        ) : qrError ? (
-          <p role="alert">{qrError}</p>
-        ) : (
-          <p className="kiosk-share-loading" role="status"><LoaderCircle size={19} className="still-camera-spinner" /> Preparing your QR code…</p>
-        )}
-        <p>View your gallery and download all three images to your phone.</p>
-        <a href={galleryUrl} target="_blank" rel="noreferrer">Open photo gallery <ArrowUpRight size={13} /></a>
+        <div className="kiosk-share-code">
+          {qr?.url === galleryUrl ? (
+            <>
+              <img className="kiosk-share-qr" src={qr.image} alt="QR code to view and download your three photos" width={320} height={320} />
+              <span className="kiosk-share-scan" aria-hidden="true" />
+            </>
+          ) : qrError ? (
+            <p role="alert">{qrError}</p>
+          ) : (
+            <p className="kiosk-share-loading" role="status"><LoaderCircle size={40} className="still-camera-spinner" /> Preparing your QR code…</p>
+          )}
+        </div>
+        <div className="kiosk-share-text">
+          <h3>Scan to save</h3>
+          <p>Point your phone’s camera here to see and download all three photos.</p>
+          <a href={galleryUrl} target="_blank" rel="noreferrer">Open photo gallery <ArrowUpRight size={22} /></a>
+        </div>
       </div>
     );
   }
@@ -53,9 +60,11 @@ export function PhotoSharing({ sharing, busy, error, onRetry }: {
   if (busy) {
     return (
       <div className="kiosk-share-card kiosk-share-pending" role="status">
-        <LoaderCircle size={24} className="still-camera-spinner" />
-        <h3>Getting your photos ready…</h3>
-        <p>Your QR code will appear once all three photos finish uploading.</p>
+        <LoaderCircle size={56} className="still-camera-spinner" />
+        <div className="kiosk-share-text">
+          <h3>Getting your QR code ready…</h3>
+          <p>It appears as soon as all three photos finish uploading.</p>
+        </div>
       </div>
     );
   }
@@ -64,7 +73,7 @@ export function PhotoSharing({ sharing, busy, error, onRetry }: {
     return (
       <div className="kiosk-share-card kiosk-share-failed">
         <p role="alert">{error || sharing?.error || "We couldn’t upload your photos. They are still saved on this booth."}</p>
-        <button type="button" className="kiosk-cancel" onClick={onRetry}><RefreshCw size={14} /> Retry photo upload</button>
+        <button type="button" className="kiosk-secondary" onClick={onRetry}><RefreshCw size={30} strokeWidth={2.4} /> Retry photo upload</button>
       </div>
     );
   }

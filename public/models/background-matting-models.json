@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "license": "MIT",
+  "input": {
+    "names": ["src", "bgr"],
+    "dtype": "float32",
+    "shape": [1, 3, 512, 768],
+    "layout": "NCHW",
+    "color": "RGB",
+    "scale": 0.00392156862745098
+  },
+  "output": {
+    "name": "pha",
+    "dtype": "float32",
+    "shape": [1, 1, 512, 768],
+    "activation": "identity"
+  },
+  "models": [
+    {
+      "id": "background-matting-mobilenet",
+      "name": "BackgroundMattingV2 MobileNetV2",
+      "upstream": "https://github.com/PeterL1n/BackgroundMattingV2",
+      "revision": "v1.0.0",
+      "assetId": 141947092,
+      "url": "https://github.com/PeterL1n/BackgroundMattingV2/releases/download/v1.0.0/onnx_mobilenetv2_hd.onnx",
+      "bytes": 20007646,
+      "sha256": "6d6c3fbecbc330d070c3d89c7542ef476f849e7d5e7e8c914f85ba5730d744dd",
+      "opset": 11,
+      "backbone": "mobilenetv2",
+      "backboneScale": 0.25,
+      "refineMode": "sampling",
+      "refineSamplePixels": 80000,
+      "localPath": "background-matting-mobilenet/model.onnx"
+    }
+  ]
+}

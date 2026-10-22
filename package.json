@@ -10,6 +10,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "setup:ai": "python3 scripts/native-ai/setup.py",
+    "setup:foreground": "node scripts/setup-general-foreground.mjs",
     "lint": "eslint",
     "test": "node --import tsx --test src/lib/*.test.* src/components/kiosk/*.test.*"
   },

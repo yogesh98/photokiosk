@@ -12,10 +12,13 @@ import sharp from "sharp";
 import { unstable_rethrow } from "next/navigation";
 import { DEFAULT_AI_ACCELERATION, DEFAULT_AI_MODEL, isAiAcceleration, isAiModelId } from "./ai-models";
 import { isBackgroundSequence } from "./background-sequence";
+import { BACKGROUND_REFERENCE_HEIGHT, BACKGROUND_REFERENCE_ID_PATTERN, BACKGROUND_REFERENCE_WIDTH, getBackgroundReferenceCameraKey, isBackgroundReference } from "./background-reference-camera";
+import { BackgroundReferenceImageError, normalizeBackgroundReference } from "./background-reference";
 import {
   DEFAULT_SETTINGS,
   type Background,
   type BackgroundMode,
+  type BackgroundReference,
   type KioskSettings,
   type PhotoSession,
   type StudioData,
@@ -87,8 +90,10 @@ async function persist(state: SavedState, root: string) {
   const temporary = path.join(root, `.studio-${randomUUID()}.tmp`);
   try {
     await writeFile(temporary, JSON.stringify(state, null, 2), { mode: 0o600 });
+    // Restrict the replacement before committing it. A permission failure must
+    // not report a failed transaction after new metadata is already visible.
+    await chmod(temporary, 0o600);
     await rename(temporary, path.join(root, "studio.json"));
-    await chmod(path.join(root, "studio.json"), 0o600);
   } finally {
     await rm(temporary, { force: true });
   }
@@ -130,6 +135,8 @@ async function withStore<T>(
           !isAiAcceleration(state.settings.aiAcceleration)) ||
         (state.settings.backgroundSequence !== undefined &&
           !isBackgroundSequence(state.settings.backgroundSequence)) ||
+        (state.settings.backgroundReference !== undefined && state.settings.backgroundReference !== null &&
+          !isBackgroundReference(state.settings.backgroundReference)) ||
         !Array.isArray(state.backgrounds) ||
         !Array.isArray(state.sessions)
       ) {
@@ -165,6 +172,10 @@ async function withStore<T>(
     }
     if (state.settings.aiAcceleration === undefined) {
       state.settings.aiAcceleration = DEFAULT_AI_ACCELERATION;
+      changed = true;
+    }
+    if (state.settings.backgroundReference === undefined) {
+      state.settings.backgroundReference = null;
       changed = true;
     }
     if (state.settings.backgroundSequence === undefined) {
@@ -289,6 +300,8 @@ export function validateEmail(value: unknown): string {
 
 export async function updateSettings(input: unknown): Promise<KioskSettings> {
   const patch = record(input, "Settings");
+  if ("backgroundReference" in patch)
+    throw new StudioError("Capture a new empty background to update its reference image.");
   return withStore((state) => {
     const settings = state.settings;
     if ("eventName" in patch)
@@ -461,6 +474,48 @@ async function writePrivateFile(
     flag: "wx",
     mode: 0o600,
   });
+}
+
+export async function saveBackgroundReference(file: File, cameraKeyInput: unknown): Promise<KioskSettings> {
+  const cameraKey = text(cameraKeyInput, "Reference camera settings", 2048, false);
+  let bytes: Buffer;
+  try {
+    bytes = await normalizeBackgroundReference(file);
+  } catch (error) {
+    if (error instanceof BackgroundReferenceImageError) throw new StudioError(error.message, error.status);
+    throw error;
+  }
+  return withStore(async (state, root) => {
+    if (cameraKey !== getBackgroundReferenceCameraKey(state.settings.camera))
+      throw new StudioError("The camera settings changed. Save the camera settings and capture the empty background again.", 409);
+    const id = randomUUID();
+    const reference: BackgroundReference = {
+      id, url: `/api/ai/reference/${id}`, width: BACKGROUND_REFERENCE_WIDTH,
+      height: BACKGROUND_REFERENCE_HEIGHT, capturedAt: new Date().toISOString(), cameraKey,
+    };
+    const relative = ["reference-backgrounds", `${id}.png`];
+    try {
+      await writePrivateFile(root, relative, bytes);
+      state.settings.backgroundReference = reference;
+      // Commit the image and its metadata under one store lock. Keep previous
+      // immutable plates available to any in-flight capture using their IDs.
+      await persist(state, root);
+    } catch (error) {
+      await rm(path.join(root, ...relative), { force: true });
+      throw error;
+    }
+    return publicSettings(state);
+  });
+}
+
+export async function readBackgroundReference(id: string): Promise<Buffer> {
+  if (!BACKGROUND_REFERENCE_ID_PATTERN.test(id)) throw new StudioError("Reference image not found.", 404);
+  try {
+    return await readFile(path.join(/* turbopackIgnore: true */ dataDirectory(), "reference-backgrounds", `${id}.png`));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new StudioError("Reference image not found.", 404);
+    throw error;
+  }
 }
 
 export async function addBackground(

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Optional local GPU runtime. Run with the Python interpreter to use for the venv."""
+"""Local CPU and optional GPU runtime. Run with the Python interpreter for the venv."""
 import platform
 from pathlib import Path
 import subprocess
@@ -11,15 +11,15 @@ def main():
     if not (3, 11) <= sys.version_info[:2] <= (3, 14):
         raise SystemExit("Native AI needs Python 3.11–3.14. Run this script with a supported interpreter.")
     system, machine = platform.system(), platform.machine().lower()
-    packages = ["numpy==2.4.3"]
+    packages = ["numpy==2.4.3", "onnxruntime==1.24.4", "Pillow==13.0.0"]
     if system == "Darwin" and machine == "arm64":
         if int(platform.mac_ver()[0].split(".")[0]) < 14:
             raise SystemExit("This pinned Apple Silicon runtime requires macOS 14 or newer.")
-        packages += ["onnxruntime==1.24.4", "onnx==1.20.1"]
+        packages += ["onnx==1.20.1"]
     elif system == "Linux" and machine in ("x86_64", "amd64"):
         packages += ["openvino==2026.0.0", "openvino-telemetry==2025.2.0"]
     else:
-        raise SystemExit("Native AI supports Apple Silicon macOS and Linux x86_64 with an Intel GPU. Browser CPU inference remains available.")
+        raise SystemExit("Native AI supports Apple Silicon macOS and Linux x86_64. General models run on native CPU; Intel GPU and Apple Core ML acceleration are optional.")
     root = Path(__file__).resolve().parents[2]
     target = root / ".venv-ai"
     venv.EnvBuilder(with_pip=True).create(target)
@@ -28,7 +28,7 @@ def main():
     if system == "Linux":
         subprocess.run([str(target / "bin" / "opt_in_out"), "--opt_out"], check=True)
         print("Install Intel GPU compute drivers and grant this user access to /dev/dri/render* if not already configured. See the README.")
-    print("Native AI installed. Select Portrait and Auto or GPU in the booth. No separate server is needed.")
+    print("Native AI installed. General background models use native CPU with Auto or CPU; choose GPU to test hardware acceleration. No separate server is needed.")
 
 
 if __name__ == "__main__":

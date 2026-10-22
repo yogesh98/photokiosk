@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { createPersonSegmenter } from "./person-segmentation";
-import { AI_MODELS, isAiModelId, type AiModelId, type AiAcceleration, type AiRuntimeInfo } from "./ai-models";
+import { AI_MODELS, isAiModelId, isGeneralForegroundModel, isNativeForegroundModel, isBackgroundReferenceModel, type AiModelId, type AiAcceleration, type AiRuntimeInfo } from "./ai-models";
+import { DEFAULT_SETTINGS } from "./kiosk-types";
+import { getBackgroundReferenceCameraKey } from "./background-reference-camera";
+
+const reference = { id: "12345678-1234-4123-8123-123456789abc", url: "/api/ai/reference/12345678-1234-4123-8123-123456789abc",
+  width: 768 as const, height: 512 as const, capturedAt: "2026-10-21T00:00:00.000Z", cameraKey: getBackgroundReferenceCameraKey(DEFAULT_SETTINGS.camera) };
 
 class FakeCanvas {
   width = 640;
@@ -24,12 +29,13 @@ class FakeWorker {
   onerror?: () => void;
   onmessageerror?: () => void;
   terminated = false;
-  messages: { type: string; id?: number; bitmap?: FakeBitmap; model?: AiModelId; acceleration?: AiAcceleration }[] = [];
+  messages: { type: string; id?: number; bitmap?: FakeBitmap; model?: AiModelId; acceleration?: AiAcceleration; referenceId?: string }[] = [];
   constructor(readonly url: string, readonly options: WorkerOptions) { FakeWorker.latest = this; }
   postMessage(message: { type: string; id?: number; bitmap?: FakeBitmap; model?: AiModelId; acceleration?: AiAcceleration }) { this.messages.push(message); }
   terminate() { this.terminated = true; }
   emit(data: unknown) { this.onmessage?.({ data }); }
   runtime(): AiRuntimeInfo {
+    if (isNativeForegroundModel(this.messages[0]?.model)) return { backend: "onnx-cpu", label: "CPU (ONNX Runtime)" };
     return this.messages[0]?.model === "modnet"
       ? { backend: "onnx-wasm", label: "CPU (WebAssembly)" }
       : { backend: "mediapipe-cpu", label: "CPU (MediaPipe)" };
@@ -37,6 +43,7 @@ class FakeWorker {
   result(id: number, confidence = 0.75, width = 256, height = 256, kind = "confidence") {
     this.emit({
       type: "result", id, width, height, kind, runtime: this.runtime(),
+      ...(this.messages[0]?.referenceId ? { referenceId: this.messages[0].referenceId } : {}),
       confidence: new Float32Array(width * height).fill(confidence).buffer,
     });
   }
@@ -57,9 +64,10 @@ function setup(t: TestContext) {
     });
   }
   return async (model: AiModelId = "selfie") => {
-    const initializing = createPersonSegmenter(model);
+    const initializing = createPersonSegmenter(model, undefined, "auto", isBackgroundReferenceModel(model)
+      ? { reference, camera: DEFAULT_SETTINGS.camera } : undefined);
     const worker = FakeWorker.latest;
-    worker.emit({ type: "ready", runtime: worker.runtime() });
+    worker.emit({ type: "ready", runtime: worker.runtime(), ...(isBackgroundReferenceModel(model) ? { referenceId: reference.id } : {}) });
     const segmenter = await initializing;
     t.after(() => segmenter.close());
     return { worker, segmenter };
@@ -189,7 +197,8 @@ test("each supported model is selected explicitly during initialization", async 
   const start = setup(t);
   for (const model of AI_MODELS) {
     const { worker, segmenter } = await start(model.id);
-    assert.deepEqual(worker.messages[0], { type: "initialize", model: model.id, acceleration: "auto" });
+    assert.deepEqual(worker.messages[0], { type: "initialize", model: model.id, acceleration: "auto",
+      ...(isBackgroundReferenceModel(model.id) ? { referenceId: reference.id } : {}) });
     segmenter.close();
   }
   assert.equal(isAiModelId("unknown"), false);
@@ -209,6 +218,60 @@ test("portrait inference preserves camera aspect ratio and returns soft alpha", 
   assert.equal(mask.kind, "alpha");
   assert.equal(mask.confidence[0], 0.125);
   assert.deepEqual([mask.width, mask.height], [512, 384]);
+});
+
+test("general foreground models use the complete fixed-size frame and preserve soft opacity", async (t) => {
+  const start = setup(t);
+  for (const model of AI_MODELS.filter((item) => isGeneralForegroundModel(item.id))) {
+    const { worker, segmenter } = await start(model.id);
+    const source = canvas();
+    source.width = 1080;
+    source.height = 1920;
+    const result = segmenter.segment(source);
+    await flush();
+    const bitmap = worker.messages[1].bitmap!;
+    assert.deepEqual([bitmap.width, bitmap.height], [1024, 1024]);
+    worker.result(1, 0.125, 1024, 1024, "alpha");
+    const mask = await result;
+    assert.equal(mask.kind, "alpha");
+    assert.equal(mask.confidence[0], 0.125);
+    assert.equal(segmenter.runtime.backend, "onnx-cpu");
+    segmenter.close();
+  }
+});
+
+test("general foreground readiness rejects a person runtime and CPU substitution in GPU mode", async (t) => {
+  setup(t);
+  for (const [acceleration, runtime] of [
+    ["auto", { backend: "mediapipe-cpu", label: "CPU (MediaPipe)" }],
+    ["gpu", { backend: "onnx-cpu", label: "CPU (ONNX Runtime)" }],
+  ] as const) {
+    const initializing = assert.rejects(createPersonSegmenter("birefnet-lite", undefined, acceleration), /invalid acceleration backend/);
+    FakeWorker.latest.emit({ type: "ready", runtime });
+    await initializing;
+  }
+});
+
+test("reference matting requires a plate matching camera settings before starting inference", async (t) => {
+  setup(t);
+  for (const options of [undefined, { reference, camera: { ...DEFAULT_SETTINGS.camera, mirror: !DEFAULT_SETTINGS.camera.mirror } }]) {
+    const previous = FakeWorker.latest;
+    await assert.rejects(createPersonSegmenter("background-matting-mobilenet", undefined, "auto", options), /Capture an empty background/);
+    assert.equal(FakeWorker.latest, previous, "no worker or camera is started for a missing or incompatible plate");
+  }
+});
+
+test("reference matting retains rectangular geometry and pins the captured plate", async (t) => {
+  const { worker, segmenter } = await setup(t)("background-matting-mobilenet");
+  const result = segmenter.segment(canvas());
+  await flush();
+  assert.deepEqual([worker.messages[1].bitmap!.width, worker.messages[1].bitmap!.height], [768, 512]);
+  worker.result(1, 0.125, 768, 512, "alpha");
+  assert.equal((await result).confidence[0], 0.125);
+  const stale = assert.rejects(segmenter.segment(canvas()), /invalid person mask/);
+  worker.emit({ type: "result", id: 2, width: 768, height: 512, kind: "alpha", runtime: worker.runtime(),
+    referenceId: "another-plate", confidence: new Float32Array(768 * 512).buffer });
+  await stale;
 });
 
 test("portrait inference validates the dimensions expected for each frame", async (t) => {

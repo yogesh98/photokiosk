@@ -7,6 +7,14 @@ export interface BackgroundSequence {
   mode: BackgroundSequenceMode;
   photoIds: [string, string, string];
 }
+export interface BackgroundReference {
+  id: string;
+  url: string;
+  width: 768;
+  height: 512;
+  capturedAt: string;
+  cameraKey: string;
+}
 export interface KioskSettings {
   eventName: string;
   activeBackgroundId: string;
@@ -14,6 +22,7 @@ export interface KioskSettings {
   backgroundSequence: BackgroundSequence;
   aiModel: AiModelId;
   aiAcceleration: AiAcceleration;
+  backgroundReference: BackgroundReference | null;
   camera: {
     mode: CameraMode;
     deviceId: string;
@@ -83,6 +92,7 @@ export const DEFAULT_SETTINGS: KioskSettings = {
   backgroundSequence: { mode: "single", photoIds: ["coast", "coast", "coast"] },
   aiModel: DEFAULT_AI_MODEL,
   aiAcceleration: DEFAULT_AI_ACCELERATION,
+  backgroundReference: null,
   camera: {
     mode: "browser",
     deviceId: "",

@@ -44,6 +44,16 @@ test("reports the requested preference and actual runtime, including CPU fallbac
   assert.deepEqual(result?.runtime, runtime);
 });
 
+test("general foreground models default to the local ONNX runtime in measurements", () => {
+  for (const model of ["birefnet-lite", "birefnet-general", "birefnet-matting"] as const) {
+    const record = createPreviewPerformanceTracker(model);
+    let result;
+    for (let index = 0; index < 8; index++) result = record(1200, index * 1200);
+    assert.equal(result?.model, model);
+    assert.deepEqual(result?.runtime, { backend: "onnx-cpu", label: "CPU · ONNX Runtime" });
+  }
+});
+
 test("comparison keys keep requested modes and actual devices separate", () => {
   const cpu = { model: "modnet", acceleration: "cpu", runtime: { backend: "onnx-wasm", label: "CPU · WebAssembly" } } as const;
   const gpu = { ...cpu, acceleration: "gpu", runtime: { backend: "onnx-webgpu", label: "GPU · WebGPU" } } as const;

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { copyFile, mkdir, readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { copyFile, mkdir, readFile, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +17,29 @@ await Promise.all(models.map(async ([filename, expectedDigest]) => {
   const digest = createHash("sha256").update(model).digest("hex");
   if (digest !== expectedDigest) throw new Error(`The bundled AI model ${filename} failed its SHA-256 check.`);
 }));
+
+const foregroundManifests = await Promise.all(["general-foreground-models.json", "background-matting-models.json"].map(async (name) =>
+  JSON.parse(await readFile(path.join(root, "public/models", name), "utf8"))));
+const foregroundModels = foregroundManifests.flatMap((manifest) => manifest.models);
+const missingForeground = [];
+for (const model of foregroundModels) {
+  const filename = path.join(root, "public/models", model.localPath);
+  try {
+    const info = await stat(filename);
+    if (info.size !== model.bytes) throw new Error(`The optional AI model ${model.name} failed its size check. Run npm run setup:foreground -- ${model.id}.`);
+    const digest = createHash("sha256");
+    for await (const chunk of createReadStream(filename)) digest.update(chunk);
+    if (digest.digest("hex") !== model.sha256) throw new Error(`The optional AI model ${model.name} failed its SHA-256 check. Run npm run setup:foreground -- ${model.id}.`);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    missingForeground.push(model.name);
+  }
+}
+if (missingForeground.length > 0) {
+  console.log(`Optional foreground weights not installed: ${missingForeground.join(", ")}. Run npm run setup:foreground to add them.`);
+} else {
+  console.log("Optional foreground weights passed size and SHA-256 checks.");
+}
 
 const mediaSource = path.dirname(require.resolve("@mediapipe/tasks-vision"));
 const mediaDestination = path.join(root, "public/vendor/mediapipe");

@@ -1,4 +1,4 @@
-import type { AiAcceleration, AiModelId, AiRuntimeInfo } from "./ai-models";
+import { isNativeForegroundModel, type AiAcceleration, type AiModelId, type AiRuntimeInfo } from "./ai-models";
 
 export interface PreviewPerformance {
   model: AiModelId;
@@ -20,8 +20,8 @@ export function createPreviewPerformanceTracker(
   model: AiModelId,
   acceleration: AiAcceleration = "auto",
   runtime: AiRuntimeInfo = {
-    backend: model === "modnet" ? "onnx-wasm" : "mediapipe-cpu",
-    label: model === "modnet" ? "CPU · WebAssembly" : "CPU · MediaPipe",
+    backend: isNativeForegroundModel(model) ? "onnx-cpu" : model === "modnet" ? "onnx-wasm" : "mediapipe-cpu",
+    label: isNativeForegroundModel(model) ? "CPU · ONNX Runtime" : model === "modnet" ? "CPU · WebAssembly" : "CPU · MediaPipe",
   },
 ) {
   let warmupFrames = 0;

@@ -9,35 +9,33 @@ import {
   useEffect,
   useRef,
   useState,
+  type CSSProperties,
   type FormEvent,
 } from "react";
 import {
-  Aperture,
   ArrowLeft,
   ArrowRight,
   Camera,
   Check,
-  CheckCheck,
-  ChevronRight,
   Download,
   Expand,
-  Heart,
   Image as ImageIcon,
   LoaderCircle,
   Mail,
-  QrCode,
   RefreshCw,
+  Send,
   Settings2,
-  Sparkles,
   X,
 } from "lucide-react";
 import type { PhotoSession, StudioData } from "@/lib/kiosk-types";
 import { resolveSessionBackgrounds } from "@/lib/background-sequence";
+import { isNativeForegroundModel } from "@/lib/ai-models";
 import {
   LivePreview,
   type PreviewStatus,
 } from "@/components/kiosk/live-preview";
 import { PhotoSharing } from "@/components/kiosk/photo-sharing";
+import { EmailKeyboard } from "@/components/kiosk/email-keyboard";
 import {
   runCaptureSequence,
   waitForCaptureScene,
@@ -93,6 +91,8 @@ export default function KioskPage() {
   const [sharingBusy, setSharingBusy] = useState(false);
   const [flash, setFlash] = useState(false);
   const [resetIn, setResetIn] = useState(20);
+  // Screen-only state: whether the touch keyboard sheet for email is showing.
+  const [emailOpen, setEmailOpen] = useState(false);
   const captureRef = useRef<CaptureReadiness>({ capture: null });
   const cameraErrorRef = useRef<string | null>(null);
   const sessionBackgroundNamesRef = useRef<[string, string, string]>(["Original background", "Original background", "Original background"]);
@@ -173,6 +173,7 @@ export default function KioskPage() {
     setPreparingPhoto(false);
     setCountdown(5);
     setEmail("");
+    setEmailOpen(false);
     setSentAddress("");
     setError(null);
     setSharingError(null);
@@ -300,6 +301,8 @@ export default function KioskPage() {
             () => ({ ...captureRef.current, error: cameraErrorRef.current }),
             plannedBackgrounds[number - 1]?.url,
             signal,
+            undefined,
+            studio?.settings.backgroundMode === "ai" && isNativeForegroundModel(studio.settings.aiModel) ? 210000 : 30000,
           );
           setPreparingPhoto(false);
         },
@@ -394,110 +397,168 @@ export default function KioskPage() {
   const reviewing =
     stage === "review" || stage === "sending" || stage === "saving";
   const isCapturing = stage === "capturing";
+  const canShare = Boolean(studio?.settings.b2.configured);
+  const canEmail = Boolean(studio?.settings.gmail.configured);
+  const showEmailSheet =
+    emailOpen && canEmail && (stage === "review" || stage === "sending");
+  const capturePrompt = preparingPhoto
+    ? "Getting your next background ready…"
+    : countdown === 0
+      ? "Hold that pose…"
+      : photoNumber === 1
+        ? "Look at the camera and smile!"
+        : photoNumber === 2
+          ? "New pose. Go!"
+          : "Last one. Make it silly!";
 
   return (
-    <main className="kiosk-shell">
+    <main className={`kiosk-shell is-${stage}`}>
       <header className="kiosk-header">
-        <Link href="/" className="kiosk-brand" aria-label="Still photo studio">
-          <Aperture size={30} strokeWidth={1.7} />
-          <span>
-            still<span className="kiosk-brand-dot">.</span>
-          </span>
-        </Link>
-        <div className="kiosk-event">
-          <span className="kiosk-small-dot" />
-          {studio?.settings.eventName || "A little moment. A lasting memory."}
-        </div>
+        {studio && stage !== "idle" && (
+          <div className="kiosk-brand">
+            <img
+              src="/brand/kdc-logo.png"
+              alt="Kids’ Diwali Celebration"
+              width={1024}
+              height={576}
+            />
+          </div>
+        )}
+        <p className="kiosk-event">
+          {studio?.settings.eventName || "Photo booth"}
+        </p>
         <button
           type="button"
           className="kiosk-icon-button"
           aria-label="Toggle fullscreen"
           onClick={toggleFullscreen}
         >
-          <Expand size={19} strokeWidth={1.6} />
+          <Expand size={28} strokeWidth={2} />
         </button>
       </header>
 
       {!studio ? (
         <section className="kiosk-loading">
-          <Aperture size={45} strokeWidth={1} />
-          <h1>{loadingError ? "A little pause." : "Setting the scene…"}</h1>
-          <p>{loadingError || "Your next good memory is almost ready."}</p>
-          {loadingError && (
-            <button className="kiosk-primary" onClick={() => void loadStudio()}>
-              <RefreshCw size={17} />
+          <div className="kiosk-loading-logo">
+            <img
+              src="/brand/kdc-logo.png"
+              alt="Kids’ Diwali Celebration"
+              width={1024}
+              height={576}
+            />
+          </div>
+          <h1>{loadingError ? "One moment…" : "Setting up the booth…"}</h1>
+          <p>
+            {loadingError || "The camera and backgrounds are almost ready."}
+          </p>
+          {loadingError ? (
+            <button
+              className="kiosk-primary"
+              type="button"
+              onClick={() => void loadStudio()}
+            >
+              <RefreshCw size={36} strokeWidth={2.4} />
               Try again
             </button>
+          ) : (
+            <LoaderCircle
+              size={64}
+              className="still-camera-spinner kiosk-loading-spinner"
+            />
           )}
         </section>
       ) : stage === "success" ? (
         <section className="kiosk-success">
-          <div className="kiosk-success-icon">
-            <CheckCheck size={36} strokeWidth={1.5} />
-            <span>
-              <Sparkles size={21} />
-            </span>
+          <div className="kiosk-confetti" aria-hidden="true">
+            {CONFETTI.map((piece, index) => (
+              <span key={index} style={piece} />
+            ))}
           </div>
-          <p className="kiosk-eyebrow">GOOD TIMES, DELIVERED</p>
-          <h1>
-            A little memory.
-            <br />
-            <em>All yours.</em>
-          </h1>
+          <div className="kiosk-send-stage" aria-hidden="true">
+            <div className="kiosk-envelope">
+              <div className="kiosk-envelope-back" />
+              <div className="kiosk-envelope-photos">
+                {photos.map((photo, index) => (
+                  <img key={index} src={photo} alt="" />
+                ))}
+              </div>
+              <div className="kiosk-envelope-front" />
+              <div className="kiosk-envelope-flap" />
+            </div>
+            <div className="kiosk-success-check">
+              <Check size={96} strokeWidth={2.6} />
+            </div>
+          </div>
+          <h1>On its way!</h1>
           <p>
-            Your three photos are on their way to
+            Your three photos are heading to
             <br />
             <strong>{sentAddress}</strong>
           </p>
-          <div className="kiosk-success-strip">
-            {photos.map((photo, index) => (
-              <img
-                key={index}
-                src={photo}
-                alt={`Your memory, photo ${index + 1}`}
-              />
-            ))}
-          </div>
-          {studio.settings.b2.configured && session && (
-            <PhotoSharing sharing={session.sharing} busy={sharingBusy} error={sharingError} onRetry={() => void sharePhotos(session)} />
+          <p className="kiosk-success-hint">
+            Not there in a few minutes? Check your spam folder.
+          </p>
+          {canShare && session && (
+            <PhotoSharing
+              sharing={session.sharing}
+              busy={sharingBusy}
+              error={sharingError}
+              onRetry={() => void sharePhotos(session)}
+            />
           )}
-          <button className="kiosk-primary" type="button" onClick={reset}>
-            Next happy people <ArrowRight size={19} />
-          </button>
-          {!sharingBusy && <p className="kiosk-reset-note">Ready for the next guest in {resetIn} seconds</p>}
+          <div className="kiosk-success-footer">
+            {!sharingBusy && (
+              <>
+                <p className="kiosk-reset-note">
+                  Back to the start in {resetIn} seconds
+                </p>
+                <div className="kiosk-reset-bar" aria-hidden="true">
+                  <span style={{ width: `${(resetIn / 20) * 100}%` }} />
+                </div>
+              </>
+            )}
+            <button className="kiosk-primary" type="button" onClick={reset}>
+              Next guest <ArrowRight size={44} strokeWidth={2.6} />
+            </button>
+          </div>
         </section>
       ) : (
         <>
           <section className="kiosk-heading">
-            <p className="kiosk-eyebrow">
-              <Sparkles size={13} /> A MOMENT WORTH KEEPING
-            </p>
-            <h1>
-              {reviewing ? (
-                <>
-                  Looking <em>good.</em>
-                </>
-              ) : isCapturing ? (
-                <>
-                  Your moment <em>is here.</em>
-                </>
-              ) : (
-                <>
-                  Make a little <em>memory.</em>
-                </>
-              )}
-            </h1>
-            <p>
-              {reviewing
-                ? "Three little moments. One very good memory."
-                : isCapturing
-                  ? preparingPhoto
-                    ? "Setting the scene for your next photo…"
-                    : countdown === 0
-                    ? "Perfect. Hold that thought…"
-                    : "Get comfortable, look into the camera, and be yourself."
-                  : "Step into the frame. Be yourself. We’ll do the rest."}
-            </p>
+            {reviewing ? (
+              <>
+                <h1>Your photos</h1>
+                <p>Tap a photo to see it big.</p>
+              </>
+            ) : isCapturing ? (
+              <>
+                <h1 key={photoNumber}>Photo {photoNumber} of 3</h1>
+                <p>{capturePrompt}</p>
+              </>
+            ) : (
+              <div className="kiosk-sign">
+                {BULBS.map((bulb, index) => (
+                  <span
+                    key={index}
+                    className="kiosk-bulb"
+                    style={bulb}
+                    aria-hidden="true"
+                  />
+                ))}
+                <div className="kiosk-sign-panel">
+                  <img
+                    src="/brand/kdc-logo.png"
+                    alt="Kids’ Diwali Celebration"
+                    width={1024}
+                    height={576}
+                  />
+                  <h1>
+                    <span>Photo</span>
+                    <span>booth</span>
+                  </h1>
+                </div>
+              </div>
+            )}
           </section>
 
           <section
@@ -515,6 +576,7 @@ export default function KioskPage() {
                 />
                 {reviewing && photos[selectedPhoto] && (
                   <img
+                    key={selectedPhoto}
                     className="kiosk-review-main"
                     src={photos[selectedPhoto]}
                     alt={`Captured photo ${selectedPhoto + 1}`}
@@ -524,16 +586,12 @@ export default function KioskPage() {
                   <>
                     <div className="kiosk-live-badge">
                       <span className={cameraStatus.ready ? "is-ready" : ""} />
-                      {cameraStatus.ready ? "LIVE PREVIEW" : "CAMERA PREVIEW"}
+                      {cameraStatus.ready ? "Live" : "Camera starting"}
                     </div>
                     <div className="kiosk-scene-label">
-                      <ImageIcon size={14} />
+                      <ImageIcon size={26} strokeWidth={2} />
                       {background?.name || "Your original scene"}
                     </div>
-                    <div className="kiosk-frame-corner top-left" />
-                    <div className="kiosk-frame-corner top-right" />
-                    <div className="kiosk-frame-corner bottom-left" />
-                    <div className="kiosk-frame-corner bottom-right" />
                   </>
                 )}
                 {isCapturing && (
@@ -541,26 +599,27 @@ export default function KioskPage() {
                     className="kiosk-countdown-overlay"
                     aria-live="assertive"
                   >
-                    <span className="kiosk-countdown-label">
-                      PHOTO {photoNumber} OF 3
+                    <span className="kiosk-sr-only">
+                      Photo {photoNumber} of 3.
                     </span>
-                    <strong key={`${photoNumber}-${countdown}`}>
-                      {preparingPhoto ? <LoaderCircle size={48} className="still-camera-spinner" /> : countdown || <Camera size={63} strokeWidth={1.2} />}
+                    <strong key={`${photoNumber}-${countdown}-${preparingPhoto}`}>
+                      {preparingPhoto ? (
+                        <LoaderCircle
+                          size={140}
+                          strokeWidth={2}
+                          className="still-camera-spinner"
+                        />
+                      ) : (
+                        countdown || <Camera size={170} strokeWidth={1.8} />
+                      )}
                     </strong>
-                    <span>
-                      {preparingPhoto ? "Getting your background ready" : countdown
-                        ? photoNumber === 1
-                          ? "Find your good side"
-                          : "A fresh pose, a new memory"
-                        : "Looking lovely"}
-                    </span>
                   </div>
                 )}
                 {flash && <div className="kiosk-flash" />}
                 {stage === "saving" && (
                   <div className="kiosk-saving-overlay">
-                    <LoaderCircle size={28} className="still-camera-spinner" />
-                    <span>Saving your memories…</span>
+                    <LoaderCircle size={64} className="still-camera-spinner" />
+                    <span>Saving your photos…</span>
                   </div>
                 )}
               </div>
@@ -571,22 +630,24 @@ export default function KioskPage() {
                       className={`kiosk-small-dot ${cameraStatus.ready ? "" : "is-muted"}`}
                     />
                     {cameraStatus.ready
-                      ? "You’re in the right place"
+                      ? "You’re in the shot"
                       : cameraStatus.loading
-                        ? "Getting everything ready"
-                        : "Waiting for your camera"}
+                        ? "Getting the camera ready"
+                        : "Waiting for the camera"}
                   </span>
                   <span>
                     {studio.settings.camera.mode === "canon"
-                      ? "Canon · USB live view"
-                      : "Browser camera"}
-                    <span className="kiosk-caption-divider">/</span>3 photos,
-                    all you
+                      ? "Canon camera"
+                      : "Webcam"}
                   </span>
                 </div>
               )}
               {reviewing && (
-                <div className="kiosk-review-thumbnails">
+                <div
+                  className="kiosk-review-thumbnails"
+                  role="group"
+                  aria-label="Choose a photo to view"
+                >
                   {photos.map((photo, index) => (
                     <button
                       key={index}
@@ -596,11 +657,8 @@ export default function KioskPage() {
                       aria-label={`View photo ${index + 1}`}
                       aria-pressed={selectedPhoto === index}
                     >
-                      <img src={photo} alt={`Photo ${index + 1}`} />
-                      <span>
-                        0{index + 1}
-                        {selectedPhoto === index && <Check size={13} />}
-                      </span>
+                      <img src={photo} alt="" />
+                      <span>{index + 1}</span>
                     </button>
                   ))}
                 </div>
@@ -608,84 +666,45 @@ export default function KioskPage() {
             </div>
 
             {reviewing ? (
-              <aside className="kiosk-email-card">
-                <div className="kiosk-email-icon">
-                  {studio.settings.b2.configured ? <QrCode size={23} strokeWidth={1.4} />
-                    : studio.settings.gmail.configured ? <Mail size={23} strokeWidth={1.4} />
-                    : <Download size={23} strokeWidth={1.4} />}
-                </div>
-                <h2>Keep the good times.</h2>
-                <p>
-                  {studio.settings.b2.configured
-                    ? studio.settings.gmail.configured
-                      ? "Scan to take all three photos with you, or send them to your inbox."
-                      : "Scan the QR code to view and download all three photos on your phone."
-                    : studio.settings.gmail.configured
-                      ? "Leave your email and we’ll send all three photos straight to your inbox."
-                      : "Your three photos are ready to download on this booth."}
-                </p>
-                {studio.settings.b2.configured && session && (
-                  <PhotoSharing sharing={session.sharing} busy={sharingBusy} error={sharingError} onRetry={() => void sharePhotos(session)} />
+              <aside className="kiosk-share-panel">
+                {canShare && session && (
+                  <PhotoSharing
+                    sharing={session.sharing}
+                    busy={sharingBusy}
+                    error={sharingError}
+                    onRetry={() => void sharePhotos(session)}
+                  />
                 )}
-                {error && <div className="kiosk-inline-error" role="alert">{error}</div>}
+                {!canShare && !canEmail && (
+                  <p className="kiosk-share-note">
+                    Your three photos are ready to download on this booth.
+                  </p>
+                )}
+                {error && !showEmailSheet && (
+                  <div className="kiosk-inline-error" role="alert">
+                    {error}
+                  </div>
+                )}
                 {!session && stage === "review" && (
-                  <button type="button" className="kiosk-primary kiosk-save-retry" onClick={() => void savePhotos(photos)}>
-                    <RefreshCw size={16} /> Retry saving photos
+                  <button
+                    type="button"
+                    className="kiosk-primary kiosk-save-retry"
+                    onClick={() => void savePhotos(photos)}
+                  >
+                    <RefreshCw size={36} strokeWidth={2.4} /> Retry saving
+                    photos
                   </button>
                 )}
-                {studio.settings.gmail.configured && (
-                  <form onSubmit={sendPhotos}>
-                    <label htmlFor="guest-email">Your email address</label>
-                    <input
-                      id="guest-email"
-                      type="email"
-                      name="email"
-                      autoComplete="email"
-                      inputMode="email"
-                      placeholder="you@example.com"
-                      required
-                      maxLength={254}
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      disabled={stage !== "review"}
-                    />
-                    <button
-                      className="kiosk-primary"
-                      type="submit"
-                      disabled={
-                        stage !== "review" ||
-                        !session
-                      }
-                    >
-                      {stage === "sending" ? (
-                        <>
-                          <LoaderCircle
-                            size={17}
-                            className="still-camera-spinner"
-                          />
-                          Sending your photos…
-                        </>
-                      ) : stage === "saving" ? (
-                        <>
-                          <LoaderCircle
-                            size={17}
-                            className="still-camera-spinner"
-                          />
-                          Saving photos…
-                        </>
-                      ) : (
-                        <>
-                          Send my photos <ArrowRight size={17} />
-                        </>
-                      )}
-                    </button>
-                  </form>
-                )}
-                {studio.settings.gmail.configured && (
-                  <p className="kiosk-privacy">
-                    <Heart size={12} />
-                    Just your photos. A little happiness for your inbox.
-                  </p>
+                {canEmail && (
+                  <button
+                    type="button"
+                    className={`kiosk-email-open ${canShare ? "kiosk-secondary" : "kiosk-primary"}`}
+                    onClick={() => setEmailOpen(true)}
+                    disabled={stage !== "review" || !session}
+                  >
+                    <Mail size={40} strokeWidth={2.2} />
+                    {canShare ? "Or email them to me" : "Email my photos"}
+                  </button>
                 )}
                 <div className="kiosk-review-actions">
                   <button
@@ -693,58 +712,55 @@ export default function KioskPage() {
                     onClick={reset}
                     disabled={stage === "sending" || stage === "saving"}
                   >
-                    <RefreshCw size={14} />
+                    <RefreshCw size={32} strokeWidth={2.4} />
                     Retake
                   </button>
                   <button type="button" onClick={downloadPhotos}>
-                    <Download size={14} />
+                    <Download size={32} strokeWidth={2.4} />
                     Download
                   </button>
+                  <button
+                    type="button"
+                    className="is-done"
+                    onClick={reset}
+                    disabled={stage === "sending" || stage === "saving"}
+                  >
+                    I’m done
+                    <ArrowRight size={32} strokeWidth={2.4} />
+                  </button>
                 </div>
-                <button
-                  className="kiosk-done-link"
-                  type="button"
-                  onClick={reset}
-                  disabled={stage === "sending" || stage === "saving"}
-                >
-                  {studio.settings.gmail.configured ? "Finish without email" : "All done"} <ChevronRight size={14} />
-                </button>
               </aside>
             ) : (
-              <aside className="kiosk-photo-strip">
-                <div className="kiosk-strip-top">
-                  <Aperture size={19} strokeWidth={1.2} />
-                  <span>THE GOOD STUFF</span>
-                </div>
+              <aside className="kiosk-photo-slots" aria-label="Your three photos">
                 {[0, 1, 2].map((index) => (
                   <div
-                    className={`kiosk-strip-photo ${photos[index] ? "is-filled" : ""} ${isCapturing && photoNumber === index + 1 ? "is-next" : ""}`}
+                    className={`kiosk-slot ${photos[index] ? "is-filled" : ""} ${isCapturing && !photos[index] && photoNumber === index + 1 ? "is-next" : ""}`}
                     key={index}
                   >
                     {photos[index] ? (
-                      <img
-                        src={photos[index]}
-                        alt={`Captured photo ${index + 1}`}
-                      />
+                      <>
+                        <img
+                          src={photos[index]}
+                          alt={`Photo ${index + 1}, taken`}
+                        />
+                        <span className="kiosk-slot-check" aria-hidden="true">
+                          <Check size={30} strokeWidth={3} />
+                        </span>
+                      </>
                     ) : (
                       <>
-                        <span className="kiosk-strip-number">0{index + 1}</span>
-                        <Camera size={21} strokeWidth={1.2} />
+                        <span className="kiosk-slot-number">{index + 1}</span>
                         <span>
                           {index === 0
-                            ? "A little smile"
+                            ? "Big smiles"
                             : index === 1
-                              ? "A new pose"
-                              : "One for the memories"}
+                              ? "New pose"
+                              : "Go silly"}
                         </span>
                       </>
                     )}
                   </div>
                 ))}
-                <div className="kiosk-strip-footer">
-                  <span>made of good moments</span>
-                  <Heart size={12} strokeWidth={1.4} />
-                </div>
               </aside>
             )}
           </section>
@@ -763,15 +779,15 @@ export default function KioskPage() {
                       </span>
                       <button
                         type="button"
-                        className="kiosk-cancel"
+                        className="kiosk-secondary"
                         onClick={() => void loadStudio()}
                       >
-                        <RefreshCw size={13} />
+                        <RefreshCw size={28} strokeWidth={2.4} />
                         Try again
                       </button>
                     </>
                   ) : (
-                    <span>Getting the booth ready for you…</span>
+                    <span>Getting the booth ready…</span>
                   )}
                 </div>
               )}
@@ -787,32 +803,14 @@ export default function KioskPage() {
                 </p>
               )}
               {isCapturing ? (
-                <>
-                  <div className="kiosk-progress">
-                    {[1, 2, 3].map((number) => (
-                      <span
-                        key={number}
-                        className={
-                          photos.length >= number
-                            ? "is-complete"
-                            : photoNumber === number
-                              ? "is-current"
-                              : ""
-                        }
-                      >
-                        {photos.length >= number ? <Check size={12} /> : number}
-                      </span>
-                    ))}
-                  </div>
-                  <button
-                    className="kiosk-cancel"
-                    type="button"
-                    onClick={reset}
-                  >
-                    <X size={13} />
-                    Cancel session
-                  </button>
-                </>
+                <button
+                  className="kiosk-secondary kiosk-cancel"
+                  type="button"
+                  onClick={reset}
+                >
+                  <X size={36} strokeWidth={2.4} />
+                  Cancel
+                </button>
               ) : (
                 <>
                   <button
@@ -825,23 +823,25 @@ export default function KioskPage() {
                       settingsRefreshing
                     }
                   >
-                    <Camera size={20} strokeWidth={1.6} />
-                    Let’s make a memory
-                    <ArrowRight size={18} />
+                    <Camera size={60} strokeWidth={2.2} />
+                    Tap to start
                   </button>
-                  <div className="kiosk-instructions">
-                    <span>
+                  <ol className="kiosk-instructions">
+                    <li>
                       <span>1</span>Strike a pose
-                    </span>
-                    <i />
-                    <span>
-                      <span>2</span>Three photos, just for you
-                    </span>
-                    <i />
-                    <span>
-                      <span>3</span>{studio.settings.b2.configured ? "Scan to keep your photos" : studio.settings.gmail.configured ? "Straight to your inbox" : "Download your photos"}
-                    </span>
-                  </div>
+                    </li>
+                    <li>
+                      <span>2</span>Three photos
+                    </li>
+                    <li>
+                      <span>3</span>
+                      {canShare
+                        ? "Scan to keep them"
+                        : canEmail
+                          ? "Get them by email"
+                          : "Download them"}
+                    </li>
+                  </ol>
                 </>
               )}
             </section>
@@ -850,16 +850,118 @@ export default function KioskPage() {
       )}
 
       <footer className="kiosk-footer">
-        <span>A little pause. A lot to remember.</span>
-        <div>
-          <span>
-            POWERED BY <b>still.</b>
-          </span>
-          <Link href="/" aria-label="Back to studio">
-            <Settings2 size={14} /> Studio <ArrowLeft size={12} />
-          </Link>
-        </div>
+        <Link href="/" aria-label="Back to studio">
+          <Settings2 size={20} /> Studio
+        </Link>
       </footer>
+
+      {showEmailSheet && (
+        <div
+          className="kiosk-email-sheet"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="kiosk-email-title"
+        >
+          <form className="kiosk-email-form" onSubmit={sendPhotos}>
+            <h2 id="kiosk-email-title">Your email</h2>
+            <label htmlFor="guest-email">
+              We’ll send all three photos here.
+            </label>
+            <input
+              id="guest-email"
+              type="email"
+              name="email"
+              autoComplete="email"
+              inputMode="none"
+              placeholder="name@example.com"
+              required
+              maxLength={254}
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              disabled={stage !== "review"}
+            />
+            {error && (
+              <div className="kiosk-inline-error" role="alert">
+                {error}
+              </div>
+            )}
+            <div className="kiosk-email-photos" aria-hidden="true">
+              {photos.map((photo, index) => (
+                <img key={index} src={photo} alt="" />
+              ))}
+            </div>
+            <EmailKeyboard
+              value={email}
+              onChange={setEmail}
+              disabled={stage !== "review"}
+            />
+            <div className="kiosk-email-actions">
+              <button
+                type="button"
+                className="kiosk-secondary"
+                onClick={() => setEmailOpen(false)}
+                disabled={stage === "sending"}
+              >
+                <ArrowLeft size={36} strokeWidth={2.4} />
+                Back
+              </button>
+              <button
+                className="kiosk-primary"
+                type="submit"
+                disabled={stage !== "review" || !session}
+              >
+                {stage === "sending" ? (
+                  <>
+                    <LoaderCircle size={40} className="still-camera-spinner" />
+                    Sending…
+                  </>
+                ) : (
+                  <>
+                    Send <Send size={40} strokeWidth={2.4} />
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </main>
   );
 }
+
+/** Marquee lights around the sign: positions run clockwise from the top-left corner. */
+const BULBS: CSSProperties[] = (() => {
+  const across = 16;
+  const down = 5;
+  const edge = (fraction: number) =>
+    `calc(15px + (100% - 30px) * ${fraction.toFixed(4)})`;
+  const points: Array<[string, string]> = [];
+  for (let i = 0; i < across; i++) points.push([edge(i / across), "15px"]);
+  for (let i = 0; i < down; i++) points.push(["calc(100% - 15px)", edge(i / down)]);
+  for (let i = 0; i < across; i++)
+    points.push([edge(1 - i / across), "calc(100% - 15px)"]);
+  for (let i = 0; i < down; i++) points.push(["15px", edge(1 - i / down)]);
+  return points.map(([left, top], index) => ({
+    left,
+    top,
+    animationDelay: `${-((index % 3) * 0.4)}s`,
+  }));
+})();
+
+/** Fixed confetti layout so every send celebrates the same way. */
+const CONFETTI: CSSProperties[] = (() => {
+  let seed = 7;
+  const random = () => {
+    seed = (seed * 9301 + 49297) % 233280;
+    return seed / 233280;
+  };
+  const colors = ["#f4f6fa", "#ffffff", "#5a6473", "#a9bfef", "#2f55b0", "#dde6f7"];
+  return Array.from({ length: 44 }, (_, index) => ({
+    left: `${Math.round(random() * 96)}%`,
+    width: `${Math.round(12 + random() * 10)}px`,
+    height: `${Math.round(22 + random() * 14)}px`,
+    background: colors[index % colors.length],
+    animationDuration: `${(4.2 + random() * 3).toFixed(2)}s`,
+    animationDelay: `${(2.3 + random() * 4).toFixed(2)}s`,
+  }));
+})();
