@@ -56,6 +56,18 @@ function workerHarness(options = {}) {
     fetch: async (_url, init) => {
       const body = JSON.parse(init.body);
       requests.push(body);
+      if (options.referenceNative) {
+        const info = { provider: "onnx-cpu", device: "CPU (ONNX Runtime)", model: body.model, referenceId: body.referenceId,
+          width: 768, height: 512, kind: "alpha", ...options.referenceInfo };
+        return { ok: true, json: async () => ({ ...info, ...(body.type === "segment"
+          ? { alpha: Buffer.from(new Float32Array(768 * 512).fill(0.125).buffer).toString("base64") } : {}) }) };
+      }
+      if (options.generalNative) {
+        const info = { provider: "onnx-cpu", device: "CPU (ONNX Runtime)", model: body.model,
+          width: 1024, height: 1024, kind: "alpha", ...options.generalInfo };
+        return { ok: true, json: async () => ({ ...info, ...(body.type === "segment"
+          ? { alpha: Buffer.from(new Float32Array(1024 * 1024).fill(0.125).buffer).toString("base64") } : {}) }) };
+      }
       if (!options.native) return { ok: false, json: async () => ({ error: "Native runtime not configured" }) };
       if (body.type === "initialize") return { ok: true, json: async () => options.nativeRuntime || nativeRuntime };
       if (options.nativeFrameFails) return { ok: false, json: async () => ({ error: "Native GPU unavailable" }) };
@@ -69,7 +81,7 @@ function workerHarness(options = {}) {
   return {
     sent, delegates, providers, sessionConfigs, requests, closed, loaded, device,
     loseGpu: () => loseGpu({ reason: "unknown", message: "Test device lost" }),
-    initialize: (model = "selfie", acceleration = "auto") => context.self.onmessage({ data: { type: "initialize", model, acceleration } }),
+    initialize: (model = "selfie", acceleration = "auto", referenceId) => context.self.onmessage({ data: { type: "initialize", model, acceleration, referenceId } }),
     frame: (width = 256, height = 256) => context.self.onmessage({ data: {
       type: "segment", id: 1, bitmap: { width, height, close() { closed.push("bitmap"); } },
     } }),
@@ -82,6 +94,65 @@ test("MediaPipe Auto probes GPU and reports the GPU backend", async () => {
   assert.deepEqual(worker.delegates, ["GPU"]);
   assert.equal(worker.sent[0].type, "ready");
   assert.equal(worker.sent[0].runtime.backend, "mediapipe-gpu");
+});
+
+test("reference matting passes the pinned plate, rectangular frame, and unmodified alpha", async () => {
+  const referenceId = "12345678-1234-4123-8123-123456789abc";
+  const worker = workerHarness({ referenceNative: true });
+  await worker.initialize("background-matting-mobilenet", "auto", referenceId);
+  assert.equal(worker.sent[0].type, "ready");
+  assert.equal(worker.sent[0].referenceId, referenceId);
+  await worker.frame(768, 512);
+  assert.equal(worker.sent[1].type, "result");
+  assert.equal(worker.sent[1].referenceId, referenceId);
+  assert.equal(worker.sent[1].kind, "alpha");
+  assert.equal(new Float32Array(worker.sent[1].confidence)[0], 0.125, "opacity is not passed through a second sigmoid");
+  assert.equal(worker.requests[1].referenceId, referenceId);
+  assert.equal(Buffer.from(worker.requests[1].rgba, "base64").length, 768 * 512 * 4);
+});
+
+test("reference matting rejects missing plates and stale native references", async () => {
+  const worker = workerHarness({ referenceNative: true });
+  await worker.initialize("background-matting-mobilenet", "auto");
+  assert.equal(worker.sent[0].type, "error");
+  assert.match(worker.sent[0].message, /Capture an empty background/);
+  assert.equal(worker.requests.length, 0);
+  const stale = workerHarness({ referenceNative: true, referenceInfo: { referenceId: "another-reference" } });
+  await stale.initialize("background-matting-mobilenet", "cpu", "12345678-1234-4123-8123-123456789abc");
+  assert.equal(stale.sent[0].type, "error");
+  assert.match(stale.sent[0].message, /invalid runtime/);
+});
+
+test("general foreground uses native ONNX for every model and transfers a soft full-frame matte", async () => {
+  for (const model of ["birefnet-lite", "birefnet-general", "birefnet-matting"]) {
+    const worker = workerHarness({ generalNative: true });
+    await worker.initialize(model, "cpu");
+    assert.equal(worker.sent[0].type, "ready");
+    assert.equal(worker.sent[0].runtime.backend, "onnx-cpu");
+    assert.deepEqual(worker.loaded, [], "no browser runtime or duplicate model is loaded");
+    await worker.frame(1024, 1024);
+    const result = worker.sent[1];
+    assert.equal(result.type, "result");
+    assert.equal(result.kind, "alpha");
+    assert.equal(new Float32Array(result.confidence)[0], 0.125);
+    assert.equal(worker.requests[1].model, model);
+    assert.equal(worker.requests[1].acceleration, "cpu");
+    assert.equal(Buffer.from(worker.requests[1].rgba, "base64").length, 1024 * 1024 * 4);
+    assert.ok(worker.closed.includes("bitmap"));
+  }
+});
+
+test("general foreground rejects stale model identity, wrong dimensions, and hidden CPU in GPU mode", async () => {
+  for (const generalInfo of [{ model: "birefnet-general" }, { width: 512 }, { provider: "coreml" }]) {
+    const worker = workerHarness({ generalNative: true, generalInfo });
+    await worker.initialize("birefnet-lite", "cpu");
+    assert.equal(worker.sent[0].type, "error");
+    assert.match(worker.sent[0].message, /invalid runtime/);
+  }
+  const worker = workerHarness({ generalNative: true });
+  await worker.initialize("birefnet-lite", "gpu");
+  assert.equal(worker.sent[0].type, "error");
+  assert.match(worker.sent[0].message, /invalid runtime/);
 });
 
 test("MediaPipe Auto falls back to CPU when GPU initialization fails", async () => {

@@ -1,4 +1,6 @@
-import { AI_MODELS, DEFAULT_AI_MODEL, isAiModelId, isAiAcceleration, type AiAcceleration, type AiModelId, type AiRuntimeInfo } from "./ai-models";
+import { AI_MODELS, DEFAULT_AI_MODEL, isAiModelId, isAiAcceleration, isNativeForegroundModel, isBackgroundReferenceModel, type AiAcceleration, type AiModelId, type AiRuntimeInfo } from "./ai-models";
+import { isBackgroundReference, isBackgroundReferenceCompatible } from "./background-reference-camera";
+import type { BackgroundReference, KioskSettings } from "./kiosk-types";
 export type { AiRuntimeInfo } from "./ai-models";
 
 export interface PersonMask {
@@ -64,16 +66,26 @@ export async function createPersonSegmenter(
   model: AiModelId = DEFAULT_AI_MODEL,
   signal?: AbortSignal,
   acceleration: AiAcceleration = "auto",
+  options?: { reference?: BackgroundReference | null; camera?: KioskSettings["camera"] },
 ): Promise<PersonSegmenter> {
   if (signal?.aborted) throw abortError();
   if (!isAiModelId(model)) throw new Error("Choose a supported local AI background model.");
   if (!isAiAcceleration(acceleration)) throw new Error("Choose Auto, CPU, or GPU acceleration.");
+  const referenceModel = isBackgroundReferenceModel(model);
+  if (referenceModel && (!isBackgroundReference(options?.reference) || !options?.camera ||
+    !isBackgroundReferenceCompatible(options.reference, options.camera))) {
+    throw new Error("Capture an empty background with the current camera settings before using the reference model.");
+  }
+  const referenceId = referenceModel ? options!.reference!.id : undefined;
   if (typeof Worker === "undefined" || typeof createImageBitmap === "undefined") {
     throw new Error("Local AI backgrounds need a current Chrome or Edge browser with web worker support.");
   }
 
-  const inputSize = AI_MODELS.find((item) => item.id === model)!.inputSize;
-  const kind = model === "modnet" ? "alpha" : "confidence";
+  const selectedModel = AI_MODELS.find((item) => item.id === model)!;
+  const inputSize = selectedModel.inputSize;
+  const inputHeight = selectedModel.inputHeight ?? inputSize;
+  const general = isNativeForegroundModel(model);
+  const kind = model === "modnet" || general ? "alpha" : "confidence";
   // Native module workers load the selected runtime from public/vendor. Keeping
   // them outside the app bundle preserves their dynamic Wasm imports.
   const worker = new Worker("/workers/person-segmentation.worker.js", { type: "module" });
@@ -84,13 +96,15 @@ export async function createPersonSegmenter(
   function readRuntime(value: unknown): AiRuntimeInfo | null {
     if (!value || typeof value !== "object") return null;
     const candidate = value as AiRuntimeInfo;
-    const backends = model === "modnet"
+    const backends = general
+      ? ["onnx-cpu", "openvino-gpu", "coreml"]
+      : model === "modnet"
       ? ["onnx-wasm", "onnx-webgpu", "openvino-gpu", "coreml"]
       : ["mediapipe-cpu", "mediapipe-gpu"];
     if (!backends.includes(candidate.backend) || typeof candidate.label !== "string" || !candidate.label.trim() ||
       candidate.label.length > 200 || (candidate.fallbackReason !== undefined &&
         (typeof candidate.fallbackReason !== "string" || candidate.fallbackReason.length > 1000))) return null;
-    const cpu = candidate.backend === "onnx-wasm" || candidate.backend === "mediapipe-cpu";
+    const cpu = candidate.backend === "onnx-wasm" || candidate.backend === "mediapipe-cpu" || candidate.backend === "onnx-cpu";
     if ((acceleration === "gpu" && cpu) || (acceleration === "cpu" && !cpu)) return null;
     return { backend: candidate.backend, label: candidate.label, ...(candidate.fallbackReason ? { fallbackReason: candidate.fallbackReason } : {}) };
   }
@@ -122,14 +136,14 @@ export async function createPersonSegmenter(
 
   const startupTimer = setTimeout(() => {
     stop(new Error("The local AI model took too long to load. Retry AI or switch to green screen."));
-  }, STARTUP_TIMEOUT_MS);
+  }, general ? 200_000 : STARTUP_TIMEOUT_MS);
 
   worker.onmessage = (event: MessageEvent) => {
     const message = event.data;
     if (stopped) return;
     if (message?.type === "ready") {
       const nextRuntime = readRuntime(message.runtime);
-      if (!nextRuntime) {
+      if (!nextRuntime || (referenceModel && message.referenceId !== referenceId)) {
         stop(new Error("The local AI model reported an invalid acceleration backend."));
         return;
       }
@@ -151,6 +165,7 @@ export async function createPersonSegmenter(
     }
     if (
       message.width !== request.width || message.height !== request.height ||
+      (referenceModel && message.referenceId !== referenceId) ||
       message.kind !== kind ||
       !(message.confidence instanceof ArrayBuffer) ||
       message.confidence.byteLength !== request.width * request.height * Float32Array.BYTES_PER_ELEMENT
@@ -177,7 +192,7 @@ export async function createPersonSegmenter(
 
   const initialization = abortable(ready, signal);
   try {
-    worker.postMessage({ type: "initialize", model, acceleration });
+    worker.postMessage({ type: "initialize", model, acceleration, ...(referenceId ? { referenceId } : {}) });
   } catch (error) {
     stop(error instanceof Error ? error : new Error("Could not start the local AI model."));
   }
@@ -202,7 +217,7 @@ export async function createPersonSegmenter(
       const scale = inputSize / Math.max(source.width, source.height);
       const snapshot = document.createElement("canvas");
       snapshot.width = model === "modnet" ? Math.max(32, Math.round(source.width * scale / 32) * 32) : inputSize;
-      snapshot.height = model === "modnet" ? Math.max(32, Math.round(source.height * scale / 32) * 32) : inputSize;
+      snapshot.height = model === "modnet" ? Math.max(32, Math.round(source.height * scale / 32) * 32) : inputHeight;
       const context = snapshot.getContext("2d");
       if (!context) throw new Error("Could not prepare the photo for local AI processing.");
       context.drawImage(source, 0, 0, snapshot.width, snapshot.height);
@@ -227,7 +242,7 @@ export async function createPersonSegmenter(
           drain: drainResolve,
           timer: setTimeout(() => {
             stop(new Error("Local AI processing took too long. Retry AI or switch to green screen."));
-          }, FRAME_TIMEOUT_MS),
+          }, general ? 100_000 : FRAME_TIMEOUT_MS),
         };
         active = request;
       });

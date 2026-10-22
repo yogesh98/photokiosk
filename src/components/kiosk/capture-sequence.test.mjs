@@ -182,3 +182,31 @@ test("scene readiness propagates errors, cancellation, and bounded loading failu
   await assert.rejects(waitForCaptureScene(() => ({ capture: null }), "/a.jpg", new AbortController().signal, async () => { polls++; }), /could not be prepared/);
   assert.equal(polls, 600);
 });
+
+test("an extended scene deadline accepts a slow model and remains cancellable", async () => {
+  const expectedCapture = async () => "slow model photo";
+  let elapsed = 0;
+  const capture = await waitForCaptureScene(
+    () => ({ capture: elapsed >= 45000 ? expectedCapture : null, backgroundUrl: "/slow.jpg" }),
+    "/slow.jpg",
+    new AbortController().signal,
+    async (milliseconds) => { elapsed += milliseconds; },
+    210000,
+  );
+  assert.equal(elapsed, 45000);
+  assert.equal(capture, expectedCapture);
+
+  const controller = new AbortController();
+  elapsed = 0;
+  await assert.rejects(waitForCaptureScene(
+    () => ({ capture: null, backgroundUrl: "/slow.jpg" }),
+    "/slow.jpg",
+    controller.signal,
+    async (milliseconds) => {
+      elapsed += milliseconds;
+      if (elapsed >= 45000) controller.abort();
+    },
+    210000,
+  ), { name: "AbortError" });
+  assert.equal(elapsed, 45000);
+});

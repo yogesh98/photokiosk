@@ -2,10 +2,27 @@ import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import path from "node:path";
 
 export const NATIVE_AI_SIZE = 512;
-export const MAX_NATIVE_REQUEST_BYTES = 1_450_000;
-const FRAME_BYTES = NATIVE_AI_SIZE * NATIVE_AI_SIZE * 4;
-const BASE64_LENGTH = Math.ceil(FRAME_BYTES / 3) * 4;
-const SETUP_HELP = "Run python3 scripts/native-ai/setup.py on the computer running the booth, or select CPU.";
+export const GENERAL_NATIVE_AI_SIZE = 1024;
+export const MAX_NATIVE_REQUEST_BYTES = 5_650_000;
+const SETUP_HELP = "Run python3 scripts/native-ai/setup.py on the computer running the booth, or choose a people model that runs in the browser.";
+
+export type NativeAiModel = "modnet" | "birefnet-lite" | "birefnet-general" | "birefnet-matting" | "background-matting-mobilenet";
+export type NativeAiAcceleration = "auto" | "cpu" | "gpu";
+const MODELS: readonly NativeAiModel[] = ["modnet", "birefnet-lite", "birefnet-general", "birefnet-matting", "background-matting-mobilenet"];
+const REFERENCE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+interface NativeAiConfiguration { model?: NativeAiModel; acceleration?: NativeAiAcceleration; referenceId?: string }
+function configuration(request: NativeAiConfiguration) {
+  const model = request.model ?? "modnet";
+  const acceleration = request.acceleration ?? (request.model ? "auto" : "gpu");
+  const reference = model === "background-matting-mobilenet";
+  const width = reference ? 768 : model === "modnet" ? NATIVE_AI_SIZE : GENERAL_NATIVE_AI_SIZE;
+  const height = reference ? 512 : width;
+  return { model, acceleration, width, height, referenceId: request.referenceId };
+}
+function configurationKey(request: NativeAiConfiguration) {
+  const { model, acceleration, referenceId } = configuration(request);
+  return `${model}:${acceleration}:${referenceId ?? ""}`;
+}
 
 export class NativeAiError extends Error {
   constructor(message: string, public readonly code = "native_unavailable", public readonly status = 503) {
@@ -14,35 +31,53 @@ export class NativeAiError extends Error {
   }
 }
 
-export type NativeAiRequest = { type: "initialize" } | {
+export type NativeAiRequest = ({ type: "initialize" } | {
   type: "segment";
   width: number;
   height: number;
   rgba: string;
-};
+}) & NativeAiConfiguration;
 
 export interface NativeAiResult {
-  provider: "coreml" | "openvino";
+  provider: "coreml" | "openvino" | "onnx-cpu";
+  model?: NativeAiModel;
+  referenceId?: string;
   device: string;
   width: number;
   height: number;
   kind: "alpha";
   alpha?: string;
+  fallbackReason?: string;
 }
 
-function isFrameBase64(value: unknown): value is string {
-  return typeof value === "string" && value.length === BASE64_LENGTH &&
-    /^[A-Za-z0-9+/]+={2}$/.test(value) && Buffer.from(value, "base64").length === FRAME_BYTES;
+function isFrameBase64(value: unknown, width: number, height: number): value is string {
+  const bytes = width * height * 4;
+  return typeof value === "string" && value.length === Math.ceil(bytes / 3) * 4 &&
+    /^[A-Za-z0-9+/]+={0,2}$/.test(value) && Buffer.from(value, "base64").length === bytes;
 }
 
 export function validateNativeAiRequest(value: unknown): NativeAiRequest {
   if (!value || typeof value !== "object") throw new NativeAiError("Invalid native inference request.", "native_invalid", 400);
   const request = value as Record<string, unknown>;
-  if (request.type === "initialize") return { type: "initialize" };
-  if (request.type !== "segment" || request.width !== NATIVE_AI_SIZE || request.height !== NATIVE_AI_SIZE || !isFrameBase64(request.rgba)) {
-    throw new NativeAiError("Native Portrait requires a valid 512 × 512 RGBA frame.", "native_invalid", 400);
+  if ((request.model !== undefined && !MODELS.includes(request.model as NativeAiModel)) ||
+    (request.acceleration !== undefined && !["auto", "cpu", "gpu"].includes(request.acceleration as string))) {
+    throw new NativeAiError("Choose a supported native AI model and acceleration.", "native_invalid", 400);
   }
-  return { type: "segment", width: NATIVE_AI_SIZE, height: NATIVE_AI_SIZE, rgba: request.rgba };
+  const reference = request.model === "background-matting-mobilenet";
+  if (reference ? (typeof request.referenceId !== "string" || !REFERENCE_ID.test(request.referenceId)) : request.referenceId !== undefined) {
+    throw new NativeAiError("Capture a valid empty background for the reference model.", "native_invalid", 400);
+  }
+  const selected: NativeAiConfiguration = {
+    ...(request.model !== undefined ? { model: request.model as NativeAiModel } : {}),
+    ...(request.acceleration !== undefined ? { acceleration: request.acceleration as NativeAiAcceleration } : {}),
+    ...(reference ? { referenceId: request.referenceId as string } : {}),
+  };
+  if (request.type === "initialize") return { type: "initialize", ...selected };
+  const { width, height } = configuration(selected);
+  if (request.type !== "segment" || request.width !== width || request.height !== height || !isFrameBase64(request.rgba, width, height)) {
+    throw new NativeAiError(`Native AI requires a valid ${width} × ${height} RGBA frame.`, "native_invalid", 400);
+  }
+  return { type: "segment", width, height, rgba: request.rgba, ...selected };
 }
 
 export async function readNativeAiRequest(request: Request): Promise<NativeAiRequest> {
@@ -77,12 +112,20 @@ function validateResult(value: Record<string, unknown>, request: NativeAiRequest
   if (value.error) {
     throw new NativeAiError(typeof value.error === "string" ? value.error.slice(0, 600) : "Native AI is unavailable.");
   }
-  if ((value.provider !== "coreml" && value.provider !== "openvino") || typeof value.device !== "string" || value.device.length > 180 ||
-    value.width !== NATIVE_AI_SIZE || value.height !== NATIVE_AI_SIZE || value.kind !== "alpha") {
+  const { model, acceleration, width, height, referenceId } = configuration(request);
+  const explicitConfiguration = request.model !== undefined || request.acceleration !== undefined;
+  if ((value.provider !== "coreml" && value.provider !== "openvino" && value.provider !== "onnx-cpu") ||
+    (acceleration === "gpu" && value.provider === "onnx-cpu") ||
+    (acceleration === "cpu" && value.provider !== "onnx-cpu") ||
+    (explicitConfiguration && value.model !== model) || (value.model !== undefined && value.model !== model) ||
+    (referenceId !== undefined && value.referenceId !== referenceId) ||
+    typeof value.device !== "string" || !value.device.trim() || value.device.length > 180 ||
+    (value.fallbackReason !== undefined && (typeof value.fallbackReason !== "string" || value.fallbackReason.length > 1000)) ||
+    value.width !== width || value.height !== height || value.kind !== "alpha") {
     throw new NativeAiError("Native AI returned invalid device information.");
   }
   if (request.type === "segment") {
-    if (!isFrameBase64(value.alpha)) throw new NativeAiError("Native AI returned an invalid alpha mask.");
+    if (!isFrameBase64(value.alpha, width, height)) throw new NativeAiError("Native AI returned an invalid alpha mask.");
     const mask = Buffer.from(value.alpha, "base64");
     for (let offset = 0; offset < mask.length; offset += 4) {
       const alpha = mask.readFloatLE(offset);
@@ -90,7 +133,10 @@ function validateResult(value: Record<string, unknown>, request: NativeAiRequest
     }
   }
   return {
-    provider: value.provider, device: value.device, width: NATIVE_AI_SIZE, height: NATIVE_AI_SIZE, kind: "alpha",
+    provider: value.provider, device: value.device, width, height, kind: "alpha",
+    ...(value.model !== undefined ? { model } : {}),
+    ...(referenceId !== undefined ? { referenceId } : {}),
+    ...(value.fallbackReason ? { fallbackReason: value.fallbackReason as string } : {}),
     ...(request.type === "segment" ? { alpha: value.alpha as string } : {}),
   };
 }
@@ -101,6 +147,8 @@ interface NativeAiOptions {
   root?: string;
   initializeTimeoutMs?: number;
   frameTimeoutMs?: number;
+  generalInitializeTimeoutMs?: number;
+  generalFrameTimeoutMs?: number;
   idleTimeoutMs?: number;
 }
 
@@ -117,18 +165,24 @@ interface PendingRequest {
 /** One owned, persistent worker. Busy frames are rejected instead of queued. */
 export class NativeAiController {
   private child?: ChildProcessWithoutNullStreams;
+  private childClosed?: Promise<void>;
   private pending?: PendingRequest;
   private output = "";
   private sequence = 0;
   private idle?: ReturnType<typeof setTimeout>;
   private initialized = false;
+  private currentConfiguration?: string;
+  private retirement: Promise<void> = Promise.resolve();
 
   constructor(private readonly options: NativeAiOptions = {}) {}
 
   private stop(error?: NativeAiError): void {
     const child = this.child;
+    const closed = this.childClosed;
     this.child = undefined;
+    this.childClosed = undefined;
     this.initialized = false;
+    this.currentConfiguration = undefined;
     this.output = "";
     clearTimeout(this.idle);
     this.idle = undefined;
@@ -140,6 +194,7 @@ export class NativeAiController {
       pending.reject(error ?? new NativeAiError("Native AI was closed.", "native_cancelled", 499));
     }
     if (child) {
+      this.retirement = Promise.all([this.retirement, closed]).then(() => {});
       child.stdin.destroy();
       child.kill("SIGTERM");
       const forceKill = setTimeout(() => child.kill("SIGKILL"), 750);
@@ -162,6 +217,9 @@ export class NativeAiController {
       env: { ...process.env, PYTHONUNBUFFERED: "1", PYTHONDONTWRITEBYTECODE: "1" },
     });
     this.child = child;
+    // Register before the close handler can call stop(). Adding a new once()
+    // listener while close is already being emitted would wait forever.
+    this.childClosed = new Promise<void>((resolve) => child.once("close", () => resolve()));
     child.stdout.setEncoding("utf8");
     // Runtime diagnostics may be verbose; drain them without retaining image
     // data or unbounded logs. Structured worker errors carry useful guidance.
@@ -209,18 +267,35 @@ export class NativeAiController {
     if (signal?.aborted) return Promise.reject(new NativeAiError("Native AI request cancelled.", "native_cancelled", 499));
     if (this.pending) return Promise.reject(new NativeAiError("Native AI is processing another frame. Try again shortly.", "native_busy", 429));
     const request = validateNativeAiRequest(input);
+    const key = configurationKey(request);
+    if (this.currentConfiguration && this.currentConfiguration !== key) {
+      if (request.type !== "initialize") {
+        return Promise.reject(new NativeAiError("The native model changed. Initialize the selected model before sending another frame.", "native_model_changed", 409));
+      }
+      // A separate process releases the former model and native allocator before
+      // loading a potentially large replacement. Never keep two sessions alive.
+      this.stop();
+    }
     clearTimeout(this.idle);
     this.idle = undefined;
-    const child = this.start();
+    this.currentConfiguration = key;
     const id = ++this.sequence;
     return new Promise((resolve, reject) => {
       const abort = () => this.stop(new NativeAiError("Native AI request cancelled.", "native_cancelled", 499));
-      const timeoutMs = !this.initialized || request.type === "initialize" ? (this.options.initializeTimeoutMs ?? 40_000) : (this.options.frameTimeoutMs ?? 12_000);
+      const general = configuration(request).model !== "modnet";
+      const timeoutMs = !this.initialized || request.type === "initialize"
+        ? (general ? (this.options.generalInitializeTimeoutMs ?? this.options.initializeTimeoutMs ?? 180_000) : (this.options.initializeTimeoutMs ?? 40_000))
+        : (general ? (this.options.generalFrameTimeoutMs ?? this.options.frameTimeoutMs ?? 90_000) : (this.options.frameTimeoutMs ?? 12_000));
       const timer = setTimeout(() => this.stop(new NativeAiError("Native AI timed out. Reopen the preview to retry or select CPU.", "native_timeout", 504)), timeoutMs);
-      this.pending = { id, request, resolve, reject, timer, signal, abort };
+      const pending: PendingRequest = { id, request, resolve, reject, timer, signal, abort };
+      this.pending = pending;
       signal?.addEventListener("abort", abort, { once: true });
       if (signal?.aborted) { abort(); return; }
-      child.stdin.write(JSON.stringify({ id, ...request }) + "\n");
+      void this.retirement.then(() => {
+        if (this.pending !== pending) return;
+        const child = this.start();
+        child.stdin.write(JSON.stringify({ id, ...request }) + "\n");
+      }).catch(() => this.stop(new NativeAiError("Native AI could not start. Reopen the preview to retry.")));
     });
   }
 }

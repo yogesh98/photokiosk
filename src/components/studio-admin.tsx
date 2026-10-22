@@ -632,7 +632,7 @@ export function StudioAdmin() {
                       title: "Background replacement",
                       note:
                         settings.backgroundMode === "ai"
-                          ? "AI people · runs on this device"
+                          ? "AI background · runs on this device"
                           : settings.backgroundMode === "green-screen"
                             ? "Green screen removal is on"
                             : "Original camera background",
@@ -931,7 +931,7 @@ export function StudioAdmin() {
                 </button>
               </div>
               <ChromaSettings
-                key={JSON.stringify([settings.backgroundMode, settings.aiModel, settings.aiAcceleration, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
+                key={JSON.stringify([settings.backgroundMode, settings.aiModel, settings.aiAcceleration, settings.backgroundReference?.id, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
                 settings={settings}
                 background={previewBackground}
                 busy={busy}
@@ -963,7 +963,7 @@ export function StudioAdmin() {
                 onConnect={setBrowserReady}
               />
               <ChromaSettings
-                key={JSON.stringify([settings.backgroundMode, settings.aiModel, settings.aiAcceleration, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
+                key={JSON.stringify([settings.backgroundMode, settings.aiModel, settings.aiAcceleration, settings.backgroundReference?.id, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
                 settings={settings}
                 background={previewBackground}
                 busy={busy}
@@ -1049,7 +1049,7 @@ export function StudioAdmin() {
             <span>
               {settings.backgroundMode === "off"
                 ? "Original camera background"
-                : `Photo 1: ${previewBackground?.name || "Selected scene"} · ${settings.backgroundMode === "ai" ? "AI people" : "Green screen"}`}
+                : `Photo 1: ${previewBackground?.name || "Selected scene"} · ${settings.backgroundMode === "ai" ? "AI background" : "Green screen"}`}
             </span>
             <Link className="button dark" target="_blank" href="/kiosk">
               Launch kiosk
@@ -1073,7 +1073,7 @@ export function StudioAdmin() {
                 ],
                 [
                   "Set your scene.",
-                  "Choose a background, then select Green screen for a physical backdrop or AI people to replace the scene on this device. Choose Off to keep your original scene.",
+                  "Choose a background, then select Green screen for a physical backdrop or AI background to replace the scene on this device. Choose Off to keep your original scene.",
                 ],
                 [
                   "Send the smiles.",

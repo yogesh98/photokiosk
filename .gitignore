@@ -48,6 +48,12 @@ next-env.d.ts
 /public/vendor/mediapipe/
 /public/vendor/onnxruntime/
 
+# Optional general-foreground weights are downloaded and verified by setup:foreground
+/public/models/birefnet-*/model.onnx
+/public/models/birefnet-*/model.onnx.download-*
+/public/models/background-matting-mobilenet/model.onnx
+/public/models/background-matting-mobilenet/model.onnx.download-*
+
 # Optional local native AI environment and Python bytecode
 /.venv-ai/
 __pycache__/

@@ -27,7 +27,7 @@ Dev and production bind to `127.0.0.1`. Open the kiosk in a second browser windo
 
 1. In **Camera setup**, choose a webcam or **Canon tethering**. Save the selection, then open the preview. A webcam needs browser camera permission on localhost. For Canon, press **Start live preview**; opening the preview panel alone does not operate the camera.
 2. Choose one of six built-in backgrounds, or upload a JPEG, PNG, or WebP up to 10 MB. Under **Backgrounds for each photo**, keep the **Same background**, **Rotate backgrounds** through the library starting with the active scene, or **Choose per photo** to assign scenes to photos 1, 2, and 3. Save the photo backgrounds to apply the plan to the next session.
-3. Under **Background replacement**, choose **Green screen**, **AI people**, or **Off**. Green screen uses a physical green backdrop and offers color similarity, edge softness, and spill reduction controls. AI people removes the scene behind people without a green screen. Off keeps the camera's original scene. Open the live preview to check the result, then **Save adjustments** to apply it to the kiosk.
+3. Under **Background replacement**, choose **Green screen**, **AI background**, or **Off**. Green screen uses a physical green backdrop and offers color similarity, edge softness, and spill reduction controls. AI background offers people models and general foreground models for subjects and props without a green screen. Off keeps the camera's original scene. Open the live preview to check the result, then **Save adjustments** to apply it to the kiosk.
 4. Optionally configure **Backblaze B2** for QR sharing using the instructions below. In **Email delivery**, optionally enter the sender address, display name, and a Google app password. Customize the subject/message, save, then send a test to an address you control.
 5. Launch the kiosk. Guests have five seconds before photo one, then three seconds between each remaining photo. Photos are saved locally before sharing starts. B2 uploads run automatically when enabled; email entry appears when Gmail is configured. Guests can use both when both are configured, or keep local downloads when neither is configured.
 
@@ -37,25 +37,58 @@ The kiosk displays each photo's scene before starting its countdown and uses tha
 
 ## Local AI background replacement
 
-**AI people** offers three models in **Admin → Backgrounds → AI model**. Pick one, open the live preview, then save your choice for the kiosk.
+**AI background** offers seven models in **Admin → Backgrounds → AI model**: three people models, three BiRefNet general foreground models, and a model that uses a captured empty scene. Pick one, open the live preview, then save your choice for the kiosk. The default remains Fast.
 
 | Choice | Model | What to compare | Model size |
 | --- | --- | --- | --- |
 | Fast (default) | [MediaPipe Selfie](https://developers.google.com/edge/mediapipe/solutions/vision/image_segmenter), 256 × 256 | Lightweight person segmentation; a good baseline for a mini PC. | 244 KiB |
 | Detailed | MediaPipe Selfie Multiclass, 256 × 256 | A heavier model that separates hair, skin, clothing and accessories; all person categories are retained. | 15.6 MiB |
 | Portrait | [MODNet](https://github.com/ZHKKKe/MODNet), up to 512 pixels | Portrait matting with continuous transparency for fine edges and hair. | 24.7 MiB |
+| General foreground · Lite | [BiRefNet Lite](https://huggingface.co/ZhengPeng7/BiRefNet_lite), 1024 × 1024 | The smallest general model; compare retention of principal subjects, props, and other objects. | 214 MiB |
+| General foreground · Large | [BiRefNet General](https://huggingface.co/ZhengPeng7/BiRefNet), 1024 × 1024 | A larger general foreground model; compare edge quality and processing time. | 928 MiB |
+| General foreground · Matting | [BiRefNet Matting](https://huggingface.co/ZhengPeng7/BiRefNet-matting), 1024 × 1024 | A larger model tuned for fine edges and transparency. | 897 MiB |
+| Reference background · MobileNet | [BackgroundMattingV2 MobileNetV2](https://github.com/PeterL1n/BackgroundMattingV2), 768 × 512 | Uses an empty scene from the same fixed camera to separate people. Requires a reference capture first. | 19.1 MiB |
 
-Inference runs locally, with no account, API key, cloud service, or dedicated GPU required. All three models are bundled locally, and matching MediaPipe/ONNX browser runtimes are copied from pinned npm dependencies during setup/build. Only the selected model/runtime loads. Camera frames remain on this computer. After dependencies are installed, AI background replacement also works without internet access. CPU inference uses WebAssembly in a browser worker and does not require cross-origin isolation headers.
+Inference runs locally, with no account, API key, cloud service, or dedicated GPU required. The three original people models are bundled locally, and matching MediaPipe/ONNX browser runtimes are copied from pinned npm dependencies during setup/build. Their CPU inference uses WebAssembly in a browser worker and does not require cross-origin isolation headers. BiRefNet and BackgroundMattingV2 use a local Python process with ONNX Runtime CPU or supported native acceleration and need the one-time setup below. Only the selected model/runtime loads. Camera frames remain on this computer. After dependencies and model weights are downloaded, AI background replacement works without internet access.
+
+### Set up the native foreground models
+
+Install Python 3.11–3.14, then run this once from the project folder:
+
+```bash
+npm run setup:foreground
+npm run setup:ai
+```
+
+`setup:foreground` downloads the three pinned BiRefNet ONNX files and the BackgroundMattingV2 file to ignored local model storage, about 2.16 GB combined. To download only the reference model, run `npm run setup:foreground -- background-matting-mobilenet`. `setup:ai` prepares or updates the project-local `.venv-ai` runtime; rerun it when upgrading an older native setup so ONNX Runtime CPU and reference-image decoding are installed too. Initial package and weight downloads need internet access. Allow additional RAM for inference and disk space for optional compiled model caches. The weights are prepared explicitly, rather than downloaded during camera use. The three original people models work without this setup. You can use `PHOTO_KIOSK_AI_PYTHON` to select a compatible existing Python environment when starting the app.
+
+Choose **General foreground · Lite**, **General foreground · Large**, or **General foreground · Matting** in Admin after setup. **CPU** runs BiRefNet through local ONNX Runtime. **Auto** also uses local CPU for predictable memory use and reports that choice in the runtime status. **GPU** requests native acceleration and reports an error if the model cannot initialize or process on it. If weights or Python packages are missing, the preview shows the setup error and capture stays blocked until corrected or another model is selected.
+
+Development checks ran all three real models on public portrait and cat images, including the complete browser worker → local API → native inference path. CPU processing on the development Mac took about 3 seconds per frame for Lite, 5 seconds for General, and 7.5 seconds for Matting, excluding initialization. These are quality-comparison options with slow CPU preview. Lite's explicit Core ML GPU check failed because the pinned compiler rejected a convolution parameter; it correctly displayed an error. General/Matting GPU execution and Intel OpenVINO execution still need hardware validation.
+
+### Capture an empty scene for BackgroundMattingV2
+
+1. Save the camera settings, then select **AI background → Reference background · MobileNet** in Backgrounds.
+2. Clear everyone from the camera scene. Keep the camera fixed and use locked focus, locked exposure, and steady lighting.
+3. Click **Open empty-scene camera**. For Canon, explicitly press **Start live preview**. The capture button becomes available after a live frame arrives.
+4. Click **Capture empty background**. This freezes the raw live frame with the same centered 3:2 crop and mirror as the kiosk, resizes it to 768 × 512, and saves a local PNG reference. It does not take a still photo or create a guest session. The empty-scene camera closes after saving and the reference thumbnail appears.
+5. Open the regular preview controls, return people to the scene, and compare the result and timing. For Canon, start live preview again. Then **Save adjustments** to choose this model for the kiosk.
+
+The reference is saved immediately; the model choice is saved only by **Save adjustments**. The two preview controls share the camera by opening one at a time. Changing the camera, device selection, mirror, or exposure settings makes a saved reference incompatible and requires recapture. Camera movement, focus changes, or changing light can also spoil the result even when the saved settings are unchanged; recapture the empty scene whenever these happen. Missing or incompatible references block this model's processed preview and capture.
+
+BackgroundMattingV2 uses the current frame and the empty reference to predict a continuous alpha matte. The app composites the original camera RGB using that matte; it does not replace the camera colors with the model's foreground RGB output. Saved photographs keep the existing photo resolution of up to 2400 pixels wide, with the alpha matte scaled to match. Auto and CPU use local ONNX Runtime CPU; GPU is an explicit native hardware test.
+
+An isolated synthetic Canon check captured an empty reference without a shutter command or guest session, then ran processed preview at about 120 ms per completed CPU frame (roughly 6 FPS including transport). A full guest session saved three 2400 × 1600 JPEGs using that reference. Direct synthetic inference also verified Core ML execution. These checks establish integration and throughput; evaluate real hair, props, camera alignment, and changing light on the booth before choosing this model.
 
 Use a current desktop Chrome or Edge browser for the booth. AI preview is capped at 12 frames per second and processes one frame at a time; slower machines naturally run below that cap. Canon live preview starts only after an explicit button press, then processes frames from its persistent preview stream. Every saved photo gets its own mask from its frozen, cropped and mirrored frame, with the output retaining the existing resolution (up to 2400 pixels wide). Browser webcams and Canon captures use the same processing. Green screen and Off do not load the AI model.
 
-These models are intended for people; they are not general object-background removers. Even lighting and separation from the background help. Fine hair, held props, distant people, and crowded groups can have imperfect edges; a well-lit green screen can give cleaner results. A larger model is not always better for a particular scene. Check quality and responsiveness on the actual event computer before use. If AI cannot load or process a frame, the preview shows an error and blocks capture until retry succeeds or you select another mode/model.
+Fast, Detailed, Portrait, and BackgroundMattingV2 are intended for people. The general foreground models can also retain props and other principal subjects, but may retain unwanted objects or omit less prominent subjects. Even lighting and separation from the background help. Fine hair, held props, distant people, and crowded groups can have imperfect edges; a well-lit green screen can give cleaner results. A larger model is not always better for a particular scene, and BiRefNet may take several seconds per preview frame on a CPU. Check quality, memory use, and responsiveness on the actual event computer before use. If AI cannot load or process a frame, the preview shows an error and blocks capture until retry succeeds or you select another mode/model.
 
 Existing saved booths retain their previous background mode and start with the Fast AI model. Background images and green-screen tuning are retained when switching modes.
 
 ### Compare models on the booth computer
 
-Open **Backgrounds**, select **AI people**, choose a model and acceleration setting, and click **Open live preview**. **Auto** tries acceleration and falls back to CPU if it cannot run. **CPU** uses the browser CPU implementation. **GPU** reports an error if acceleration fails, so a GPU benchmark cannot silently become a CPU benchmark. Existing booths start with Auto.
+Open **Backgrounds**, select **AI background**, choose a model and acceleration setting, and click **Open live preview**. For the three original people models, **Auto** tries acceleration and falls back to CPU if it cannot run; for BiRefNet and BackgroundMattingV2, it selects local CPU for predictable memory use. **CPU** uses the browser CPU implementation for the original people models and local ONNX Runtime for BiRefNet and BackgroundMattingV2. **GPU** reports an error if acceleration fails, so a GPU benchmark cannot silently become a CPU benchmark. Existing booths start with Auto.
 
 The preview reports the active runtime and any fallback reason as soon as initialization finishes. The comparison table starts reporting after three warm-up frames and five measured frames. Switch models or acceleration while the preview is open to compare them using the same camera, background, lighting, and pose. Each model, selected acceleration, and runtime has a separate row. Previous measurements remain in the table until you save or leave the panel.
 
@@ -63,7 +96,7 @@ Average frame time and 95th-percentile time measure AI processing plus compositi
 
 ### GPU acceleration on Intel Ubuntu and Apple Silicon
 
-Fast and Detailed use MediaPipe's browser GPU delegate when available. Portrait tries browser WebGPU, then the optional native backend below. Auto can fall back to browser CPU processing. Browser GPU support depends on the browser, graphics drivers, and model; successful initialization and processing determine availability.
+Fast and Detailed use MediaPipe's browser GPU delegate when available. Portrait tries browser WebGPU, then the optional native backend below. BiRefNet and BackgroundMattingV2 use the native backend: Auto and CPU use local ONNX Runtime CPU, while GPU requests Core ML or OpenVINO. Browser GPU support depends on the browser, graphics drivers, and model; successful initialization and processing determine availability.
 
 For native Portrait acceleration, install Python 3.11–3.14, then run this once from the project folder:
 
@@ -80,7 +113,7 @@ This creates a project-local `.venv-ai` and installs pinned packages. It does no
 
 On Ubuntu, install the graphics compute drivers appropriate to the exact Intel GPU using the [OpenVINO installation guide](https://docs.openvino.ai/2026/get-started/install-openvino.html). The setup command installs Python packages; it does not install system drivers or change device permissions. The Intel GPU must be listed by `.venv-ai/bin/python -c 'import openvino as ov; print(ov.Core().available_devices)'`. An Intel CPU alone does not establish GPU compatibility.
 
-The native process is launched by the app and communicates over local process pipes; it does not open another network port. The first native run may take longer while compiling the model. Model caches live under `.data/native-ai`. Native Portrait uses a fixed 512 × 512 tensor; the complete frame is resized and the mask mapped back to its original aspect ratio.
+The native process is launched by the app and communicates over local process pipes; it does not open another network port. The first native run may take longer while compiling the model. Model caches live under `.data/native-ai`. Native Portrait uses a fixed 512 × 512 tensor, BiRefNet uses 1024 × 1024, and BackgroundMattingV2 uses 768 × 512; the complete frame is resized and the mask mapped back to its original aspect ratio.
 
 The reported runtime identifies the execution backend, not a guarantee that every operation runs on one chip. Core ML can divide work between GPU and CPU; ONNX WebGPU can also use CPU for unsupported operations. Intel OpenVINO explicitly targets its GPU. Switching acceleration does not change which objects a model was trained to retain—test actual props before an event.
 
@@ -94,7 +127,7 @@ npm run build
 npm start
 ```
 
-Open `http://127.0.0.1:3000/admin` on that same machine and choose your background mode. Run `npm ci` on Ubuntu itself so native dependencies such as Sharp match Linux; do not copy `node_modules` from a Mac. A normal desktop session with browser WebGL support is required for MediaPipe's image handling, including in CPU mode. Integrated graphics is sufficient for the browser path; CUDA, Python, and a separate AI service are not required. Python is only needed for the optional native acceleration setup above. Unsupported browser graphics configurations show an error rather than saving an unprocessed photo.
+Open `http://127.0.0.1:3000/admin` on that same machine and choose your background mode. Run `npm ci` on Ubuntu itself so native dependencies such as Sharp match Linux; do not copy `node_modules` from a Mac. A normal desktop session with browser WebGL support is required for MediaPipe's image handling, including in CPU mode. Integrated graphics is sufficient for the browser path; CUDA, Python, and a separate AI service are not required for the people models. Python is needed for BiRefNet, BackgroundMattingV2, and the optional native acceleration setup above. Unsupported browser graphics configurations show an error rather than saving an unprocessed photo.
 
 Webcams use the browser's camera permissions. For Canon USB tethering, also install `gphoto2` (`sudo apt install gphoto2`) and verify `gphoto2 --auto-detect` works as the same user running the booth. Close photo-import apps that have claimed the camera. Keep the application bound to localhost.
 
@@ -185,6 +218,8 @@ The tests cover countdown timing and cancellation, chroma keying, actual route h
 AI tests also cover settings migration and model validation, confidence/alpha mask composition, rolling preview measurements, worker crashes/timeouts, serialized processing after cancellation, GPU fallback, device loss, and native process lifecycle. Run native preprocessing and setup tests with `.venv-ai/bin/python -m unittest discover -s scripts/native-ai -p 'test_*.py'` after optional native setup.
 
 For real Portrait mask correctness, temporarily copy `tests/browser/modnet-gpu-parity.html` to `public/modnet-gpu-parity.html` while the app is running, open `http://127.0.0.1:3000/modnet-gpu-parity.html`, and choose a portrait. The check compares CPU and WebGPU alpha values on identical frames across three image shapes and repeated runs; it requires mean absolute error ≤ 0.001 and foreground IoU ≥ 0.99. Images stay in browser memory. Remove the temporary public HTML afterward. Run this check when changing the model, ONNX runtime, or GPU session options: finite, in-range masks alone do not establish correct segmentation. Portrait explicitly uses NCHW on WebGPU because the runtime's default layout produced fragmented masks in this check.
+
+For the BiRefNet models, temporarily copy `tests/browser/general-foreground-check.html` to `public/general-foreground-check.html` and open it on localhost. Choose a public reference image with people, props, or other objects, then check all three models. The check loads models sequentially through the real kiosk worker/API, validates full-frame alpha output, and displays composites over a purple background for visual inspection. CPU and Auto are supported; GPU is an explicit hardware test. Remove the temporary public HTML after checking. Use `npm run setup:foreground -- --verify` to verify the installed weights without network access.
 
 Chromium acceptance checks ran all three actual models on a public portrait and verified live model switching, retained CPU/GPU comparison measurements, and saved acceleration settings. Apple Silicon checks exercised MediaPipe GPU, ONNX WebGPU, browser CPU, and actual Core ML inference through the local API. Full AI kiosk sessions with the synthetic Canon driver verified three saved 2400 × 1600 JPEGs and photo review. These checks ran on the development Mac; Intel OpenVINO GPU execution and mini PC performance still need an on-device Ubuntu check.
 

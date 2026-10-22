@@ -71,8 +71,9 @@ export async function waitForCaptureScene(
   backgroundUrl: string | undefined,
   signal: AbortSignal,
   wait = abortableDelay,
+  timeoutMs = 30_000,
 ): Promise<CapturePhoto> {
-  for (let elapsed = 0; elapsed < 30_000; elapsed += 50) {
+  for (let elapsed = 0; elapsed < timeoutMs; elapsed += 50) {
     signal.throwIfAborted();
     const current = read();
     if (current.error) throw new Error(current.error);

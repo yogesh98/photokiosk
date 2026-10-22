@@ -22,6 +22,8 @@ class SetupTests(unittest.TestCase):
         builder.return_value.create.assert_called_once()
         self.assertIn("openvino==2026.0.0", run.call_args_list[0].args[0])
         self.assertIn("numpy==2.4.3", run.call_args_list[0].args[0])
+        self.assertIn("onnxruntime==1.24.4", run.call_args_list[0].args[0])
+        self.assertIn("Pillow==13.0.0", run.call_args_list[0].args[0])
         self.assertEqual(run.call_args_list[1].args[0][-1], "--opt_out")
 
     def test_apple_silicon_installs_coreml_runtime(self):

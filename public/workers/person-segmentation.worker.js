@@ -4,7 +4,12 @@ const MEDIAPIPE_MODELS = {
   selfie: "/models/selfie_segmenter/float16/1/selfie_segmenter.tflite",
   "selfie-multiclass": "/models/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite",
 };
+const GENERAL_MODELS = new Set(["birefnet-lite", "birefnet-general", "birefnet-matting"]);
+const REFERENCE_MODEL = "background-matting-mobilenet";
+const usesNativeForeground = (id) => GENERAL_MODELS.has(id) || id === REFERENCE_MODEL;
+const nativeDimensions = (id) => id === REFERENCE_MODEL ? [768, 512] : GENERAL_MODELS.has(id) ? [1024, 1024] : [512, 512];
 let model;
+let referenceId;
 let acceleration;
 let runtime;
 let segmenter;
@@ -64,9 +69,16 @@ async function nativeRequest(body, timeoutMs) {
     });
     const result = await response.json();
     if (!response.ok) throw new Error(result?.error || "Native GPU acceleration is unavailable.");
-    if ((result.provider !== "openvino" && result.provider !== "coreml") ||
+    const general = usesNativeForeground(body.model);
+    const [width, height] = nativeDimensions(body.model);
+    if ((result.provider !== "openvino" && result.provider !== "coreml" && !(general && result.provider === "onnx-cpu")) ||
       typeof result.device !== "string" || !result.device.trim() || result.device.length > 200 ||
-      result.width !== 512 || result.height !== 512 || result.kind !== "alpha") {
+      result.width !== width || result.height !== height || result.kind !== "alpha" ||
+      (general && result.model !== body.model) ||
+      (body.model === REFERENCE_MODEL && result.referenceId !== body.referenceId) ||
+      (body.acceleration === "gpu" && result.provider === "onnx-cpu") ||
+      (body.acceleration === "cpu" && result.provider !== "onnx-cpu") ||
+      (result.fallbackReason !== undefined && (typeof result.fallbackReason !== "string" || result.fallbackReason.length > 1000))) {
       throw new Error("The native GPU service returned an invalid runtime.");
     }
     return result;
@@ -76,11 +88,23 @@ async function nativeRequest(body, timeoutMs) {
 }
 
 function nativeRuntime(result) {
-  return { backend: result.provider === "openvino" ? "openvino-gpu" : "coreml", label: result.device };
+  return {
+    backend: result.provider === "openvino" ? "openvino-gpu" : result.provider === "onnx-cpu" ? "onnx-cpu" : "coreml",
+    label: result.device,
+    ...(result.fallbackReason ? { fallbackReason: result.fallbackReason } : {}),
+  };
 }
 
 async function initializeNative() {
   const result = await nativeRequest({ type: "initialize" }, 40_000);
+  runtime = nativeRuntime(result);
+}
+
+async function initializeGeneral(selectedAcceleration = acceleration) {
+  // Full BiRefNet graphs can exceed a browser's Wasm memory limit. Keep the
+  // selected model in one local, owned Python process, alongside the booth.
+  const result = await nativeRequest({ type: "initialize", model, acceleration: selectedAcceleration,
+    ...(model === REFERENCE_MODEL ? { referenceId } : {}) }, 185_000);
   runtime = nativeRuntime(result);
 }
 
@@ -134,22 +158,32 @@ async function initializeMediaPipe(gpu) {
 
 async function initializeCpu(reason) {
   cleanup();
-  if (model === "modnet") await initializeOnnx(false);
+  if (usesNativeForeground(model)) await initializeGeneral("cpu");
+  else if (model === "modnet") await initializeOnnx(false);
   else await initializeMediaPipe(false);
   if (reason) runtime.fallbackReason = reason.slice(0, 1000);
 }
 
-async function initialize(modelId, selectedAcceleration) {
+async function initialize(modelId, selectedAcceleration, selectedReferenceId) {
   if (typeof OffscreenCanvas === "undefined") {
     throw new Error("Local AI backgrounds need a browser with OffscreenCanvas support. Try current Chrome or Edge.");
   }
   if (!["auto", "cpu", "gpu"].includes(selectedAcceleration)) throw new Error("Choose Auto, CPU, or GPU acceleration.");
   model = modelId;
   acceleration = selectedAcceleration;
-  if (model !== "modnet" && !Object.hasOwn(MEDIAPIPE_MODELS, model)) throw new Error("Unsupported local AI model.");
+  if (model !== "modnet" && !usesNativeForeground(model) && !Object.hasOwn(MEDIAPIPE_MODELS, model)) throw new Error("Unsupported local AI model.");
+  if (model === REFERENCE_MODEL && (typeof selectedReferenceId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(selectedReferenceId))) {
+    throw new Error("Capture an empty background before using the reference model.");
+  }
+  referenceId = model === REFERENCE_MODEL ? selectedReferenceId : undefined;
   canvas = new OffscreenCanvas(512, 512);
   context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) throw new Error("Could not prepare the local AI canvas.");
+  if (usesNativeForeground(model)) {
+    await initializeGeneral();
+    return;
+  }
   if (acceleration === "cpu") {
     await initializeCpu();
     return;
@@ -226,17 +260,18 @@ function base64(bytes) {
   return btoa(result);
 }
 
-function decodeAlpha(value) {
-  if (typeof value !== "string" || value.length !== 1398104 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+function decodeAlpha(value, width = 512, height = width) {
+  const bytesLength = width * height * 4;
+  if (typeof value !== "string" || value.length !== Math.ceil(bytesLength / 3) * 4 || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
     throw new Error("The native GPU service returned an invalid alpha matte.");
   }
   const decoded = atob(value);
-  if (decoded.length !== 512 * 512 * 4) throw new Error("The native GPU service returned an invalid alpha matte.");
+  if (decoded.length !== bytesLength) throw new Error("The native AI service returned an invalid alpha matte.");
   const bytes = Uint8Array.from(decoded, (character) => character.charCodeAt(0));
   const view = new DataView(bytes.buffer);
-  const alpha = new Float32Array(512 * 512);
+  const alpha = new Float32Array(width * height);
   for (let index = 0; index < alpha.length; index++) alpha[index] = view.getFloat32(index * 4, true);
-  return validateAlpha(alpha, 512, 512);
+  return validateAlpha(alpha, width, height);
 }
 
 function resizeAlpha(alpha, width, height) {
@@ -257,6 +292,21 @@ function resizeAlpha(alpha, width, height) {
 }
 
 async function infer(bitmap) {
+  if (usesNativeForeground(model)) {
+    const [width, height] = nativeDimensions(model);
+    if (bitmap.width !== width || bitmap.height !== height) throw new Error(`This foreground model requires a ${width} × ${height} frame.`);
+    canvas.width = width;
+    canvas.height = height;
+    context.drawImage(bitmap, 0, 0, width, height);
+    const pixels = context.getImageData(0, 0, width, height);
+    const result = await nativeRequest({ type: "segment", model, acceleration,
+      width, height, rgba: base64(pixels.data), ...(referenceId ? { referenceId } : {}) }, 95_000);
+    const nextRuntime = nativeRuntime(result);
+    if (nextRuntime.backend !== runtime.backend || nextRuntime.label !== runtime.label) {
+      throw new Error("The native AI runtime changed unexpectedly. Reopen the preview.");
+    }
+    return decodeAlpha(result.alpha, width, height);
+  }
   if (model !== "modnet") return inferPeople(bitmap);
   const { width, height } = bitmap;
   if (width < 32 || height < 32 || width > 512 || height > 512 || width % 32 || height % 32) {
@@ -281,10 +331,10 @@ self.onmessage = async ({ data }) => {
     if (data.type === "initialize") {
       if (initialized || busy) throw new Error("The local AI model is already initialized.");
       busy = true;
-      await initialize(data.model, data.acceleration);
+      await initialize(data.model, data.acceleration, data.referenceId);
       initialized = true;
       busy = false;
-      self.postMessage({ type: "ready", runtime });
+      self.postMessage({ type: "ready", runtime, ...(referenceId ? { referenceId } : {}) });
       return;
     }
     if (data.type !== "segment") return;
@@ -294,13 +344,14 @@ self.onmessage = async ({ data }) => {
       let confidence;
       try { confidence = await infer(data.bitmap); }
       catch (error) {
-        const cpu = runtime.backend === "mediapipe-cpu" || runtime.backend === "onnx-wasm";
+        const cpu = runtime.backend === "mediapipe-cpu" || runtime.backend === "onnx-wasm" || runtime.backend === "onnx-cpu";
         if (acceleration !== "auto" || cpu) throw error;
         await initializeCpu(`GPU processing stopped: ${message(error)}`);
         confidence = await infer(data.bitmap);
       }
       self.postMessage({ type: "result", id: data.id, width: data.bitmap.width, height: data.bitmap.height,
-        confidence: confidence.buffer, kind: model === "modnet" ? "alpha" : "confidence", runtime }, [confidence.buffer]);
+        confidence: confidence.buffer, kind: model === "modnet" || usesNativeForeground(model) ? "alpha" : "confidence", runtime,
+        ...(referenceId ? { referenceId } : {}) }, [confidence.buffer]);
     } finally {
       busy = false;
       data.bitmap.close();
