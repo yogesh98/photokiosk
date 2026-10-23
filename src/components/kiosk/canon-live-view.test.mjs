@@ -23,6 +23,105 @@ function jpeg(value = "synthetic preview frame") {
   return new Response(value, { headers: { "Content-Type": "image/jpeg" } });
 }
 
+test("kiosk recovery waits through server startup and acquires a new ID after a restart", { timeout: 2000 }, async () => {
+  const calls = [];
+  const retries = [];
+  const errors = [];
+  let starts = 0;
+  let frames = 0;
+  const recovered = deferred();
+  const preview = createCanonLiveView({
+    request: async (url, options = {}) => {
+      const method = options.method || "GET";
+      calls.push({ method, url, body: options.body });
+      if (method === "POST") {
+        starts++;
+        if (starts === 1) throw new TypeError("Server is restarting");
+        if (starts === 2) return Response.json({ error: "Camera is waking" }, { status: 503 });
+        return Response.json({ id: `restart-${starts}` });
+      }
+      if (method === "DELETE") return Response.json({ stopped: true });
+      if (starts === 3 && frames === 1)
+        return Response.json({ error: "Old session expired" }, { status: 410 });
+      return jpeg();
+    },
+    onFrame: () => { if (++frames === 2) recovered.resolve(); },
+    onError: (error) => errors.push(error),
+    wait: (signal) => frames < 2 ? Promise.resolve() : waitForAbort(signal),
+    reconnect: { allowed: () => true, wait: async (attempt) => { retries.push(attempt); } },
+  });
+  const running = preview.start();
+  await preview.whenReady();
+  await recovered.promise;
+  await preview.stop();
+  await running;
+  assert.equal(starts, 4);
+  assert.deepEqual(retries, [1, 2, 1], "Backoff resets after a healthy frame");
+  assert.equal(errors.length, 3);
+  assert.deepEqual(calls.filter(({ method }) => method === "DELETE").map(({ body }) => JSON.parse(body)), [
+    { id: "restart-3" }, { id: "restart-4" },
+  ]);
+  const oldCleanup = calls.findIndex(({ method }) => method === "DELETE");
+  assert.equal(calls[oldCleanup + 1].method, "POST", "The old ID is cleaned up before reconnecting");
+  assert.ok(calls.every(({ method }) => ["POST", "GET", "DELETE"].includes(method)));
+});
+
+test("stopping during reconnect backoff cancels all later attempts", { timeout: 2000 }, async () => {
+  const retrying = deferred();
+  let starts = 0;
+  const preview = createCanonLiveView({
+    request: async () => { starts++; throw new TypeError("USB disconnected"); },
+    onFrame: () => assert.fail("No camera is available"),
+    onError: () => {},
+    reconnect: { allowed: () => true, wait: (_attempt, signal) => { retrying.resolve(); return waitForAbort(signal); } },
+  });
+  const running = preview.start();
+  const ready = assert.rejects(preview.whenReady(), { name: "AbortError" });
+  await retrying.promise;
+  await preview.stop();
+  await running;
+  await ready;
+  await nextTurn();
+  assert.equal(starts, 1);
+});
+
+test("a shutter pause or hidden kiosk during backoff prevents reconnection", { timeout: 2000 }, async () => {
+  let allowed = true;
+  let starts = 0;
+  const preview = createCanonLiveView({
+    request: async () => { starts++; return Response.json({ error: "USB disconnected" }, { status: 503 }); },
+    onFrame: () => assert.fail("No camera is available"),
+    onError: () => {},
+    reconnect: { allowed: () => allowed, wait: async () => { allowed = false; } },
+  });
+  await preview.start();
+  await assert.rejects(preview.whenReady());
+  assert.equal(starts, 1);
+});
+
+for (const failure of ["processing", "invalid-request"]) {
+  test(`automatic reconnect does not retry ${failure} errors`, { timeout: 2000 }, async () => {
+    let starts = 0;
+    const errors = [];
+    const preview = createCanonLiveView({
+      request: async (_url, options = {}) => {
+        if (options.method === "POST") {
+          starts++;
+          return failure === "invalid-request" ? Response.json({ error: "Invalid request" }, { status: 400 }) : Response.json({ id: "processing" });
+        }
+        return options.method === "DELETE" ? Response.json({ stopped: true }) : jpeg();
+      },
+      onFrame: () => { throw new Error("Invalid preview frame"); },
+      onError: (error) => errors.push(error),
+      reconnect: { allowed: () => true, wait: () => assert.fail("This error must not restart USB") },
+    });
+    await preview.start();
+    await assert.rejects(preview.whenReady());
+    assert.equal(starts, 1);
+    assert.equal(errors.length, 1);
+  });
+}
+
 test("creating or stopping Canon live view performs no request", { timeout: 2000 }, async () => {
   const calls = [];
   const preview = createCanonLiveView({

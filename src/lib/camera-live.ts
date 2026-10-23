@@ -162,7 +162,8 @@ export class GphotoLiveView {
         const detail = this.stderr.toString("utf8").trim().slice(-1500);
         const busy = /claim[^\r\n]*(?:USB|device|interface)|detach[^\r\n]*kernel|(?:camera|device)[^\r\n]*busy/i.test(detail);
         const timedOut = /PTP[^\r\n]*timeout|timeout[^\r\n]*(?:reading|writing|port)/i.test(detail);
-        this.failure = new CameraError(busy ? "Another app or the macOS camera import helper may be using the camera. Close Photos, Preview, Image Capture, and EOS Utility, then reconnect it." : timedOut ? "Canon live preview timed out over USB. Wake the camera and check its cable." : "Canon live preview ended. Start preview again to retry.", busy ? "camera_in_use" : timedOut ? "camera_timeout" : "camera_command", timedOut && !busy ? 504 : 503, detail || undefined);
+        const ioFailure = /PTP[^\r\n]*I\/O|I\/O problem|Error (?:reading|writing) from the port/i.test(detail);
+        this.failure = new CameraError(busy ? "Another app or the macOS camera import helper may be using the camera. Close Photos, Preview, Image Capture, and EOS Utility, then reconnect it." : timedOut ? "Canon live preview timed out over USB. Wake the camera and check its cable." : ioFailure ? "The camera's USB connection needs to be recovered. The kiosk will reset the connection and try again." : "Canon live preview ended. Start preview again to retry.", busy ? "camera_in_use" : timedOut ? "camera_timeout" : ioFailure ? "camera_io" : "camera_command", timedOut && !busy ? 504 : 503, detail || undefined);
       }
       clearTimeout(this.startupTimer);
       clearTimeout(this.frameTimer);

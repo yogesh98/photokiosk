@@ -31,6 +31,7 @@ interface LivePreviewProps {
   background?: Background;
   enabled?: boolean;
   allowCanonPreview?: boolean;
+  autoConnectCanon?: boolean;
   className?: string;
   onCaptureReady?: (capture: CapturePhoto | null, backgroundUrl?: string) => void;
   onReferenceCaptureReady?: (capture: (() => Promise<Blob>) | null) => void;
@@ -60,6 +61,7 @@ export function LivePreview({
   background,
   enabled = true,
   allowCanonPreview = true,
+  autoConnectCanon = false,
   className = "",
   onCaptureReady,
   onReferenceCaptureReady,
@@ -82,6 +84,8 @@ export function LivePreview({
   const canonFrameRef = useRef<ImageBitmap | null>(null);
   const canonLiveRef = useRef<ReturnType<typeof createCanonLiveView> | null>(null);
   const canonMayResumeRef = useRef(false);
+  const canonAutoPausedRef = useRef(false);
+  const canonAutoConnectRef = useRef(false);
   const canonFrameVersionRef = useRef(0);
   const renderedCanonFrameRef = useRef(0);
   const capturingRef = useRef(false);
@@ -125,6 +129,11 @@ export function LivePreview({
   const sourceReady = cameraReady && readySourceKey === sourceKey;
   const isCanon = settings.camera.mode === "canon";
 
+  useEffect(() => {
+    canonAutoConnectRef.current = autoConnectCanon && enabled && isCanon && allowCanonPreview &&
+      !processingFailed && !backgroundError;
+  }, [autoConnectCanon, enabled, isCanon, allowCanonPreview, processingFailed, backgroundError]);
+
   const beginCanonLiveView = useCallback((live: ReturnType<typeof createCanonLiveView>, signal?: AbortSignal) => {
     setCanonStarting(true);
     setCanonLiveActive(true);
@@ -139,16 +148,19 @@ export function LivePreview({
         setCanonLiveActive(false);
       }
     });
+    return flight;
   }, []);
 
   function startCanonLiveView() {
     if (!enabled || !isCanon || !allowCanonPreview || !canonLiveRef.current ||
       capturingRef.current || previewFlightRef.current || document.visibilityState !== "visible") return;
     canonMayResumeRef.current = true;
+    canonAutoPausedRef.current = false;
     beginCanonLiveView(canonLiveRef.current);
   }
 
   async function stopCanonLiveView() {
+    canonAutoPausedRef.current = true;
     canonMayResumeRef.current = false;
     await canonLiveRef.current?.stop();
     sourceRef.current = null;
@@ -159,11 +171,12 @@ export function LivePreview({
     setCanonLiveActive(false);
   }
 
-  // A button starts live view. An active photo sequence may restore it between
-  // successful shots; scene/model changes and effect cleanup never start it.
+  // The kiosk connects on startup and recovers while idle. Admin previews keep
+  // their explicit start button, and photo sequences own their shutter pauses.
   useEffect(() => {
     let current = true;
     canonMayResumeRef.current = false;
+    canonAutoPausedRef.current = false;
     queueMicrotask(() => {
       if (current) {
         setHasCanonFrame(false);
@@ -172,7 +185,10 @@ export function LivePreview({
       }
     });
     if (!enabled || !isCanon) return () => { current = false; };
+    const mayAutoConnect = () => current && canonAutoConnectRef.current && !canonAutoPausedRef.current &&
+      !capturingRef.current && document.visibilityState === "visible";
     const live = createCanonLiveView({
+      reconnect: { allowed: mayAutoConnect },
       onFrame: async (blob, signal) => {
         const next = await createImageBitmap(blob);
         if (!current || signal.aborted) { next.close(); return; }
@@ -184,21 +200,30 @@ export function LivePreview({
         previous?.close();
         setHasCanonFrame(true);
         setCanonStarting(false);
+        setCameraError(null);
       },
       onError: (error) => {
         if (!current) return;
-        canonMayResumeRef.current = false;
+        canonMayResumeRef.current = mayAutoConnect();
         sourceRef.current = null;
         setCameraReady(false);
         setCanonStarting(false);
-        setCameraError(readableCameraError(error));
+        setCameraError(readableCameraError(error) + (mayAutoConnect() ? " Reconnecting automatically…" : ""));
       },
     });
     canonLiveRef.current = live;
+    const autoStart = () => {
+      if (!mayAutoConnect()) return;
+      canonMayResumeRef.current = true;
+      beginCanonLiveView(live);
+    };
     const stopWhenHidden = () => {
       if (document.visibilityState === "hidden") {
         canonMayResumeRef.current = false;
         void live.stop();
+      } else {
+        // Await cleanup of a hidden tab's old USB session before reconnecting.
+        void live.stop().then(() => { if (current) autoStart(); });
       }
     };
     const stopOnPageHide = () => {
@@ -213,11 +238,28 @@ export function LivePreview({
       document.removeEventListener("visibilitychange", stopWhenHidden);
       window.removeEventListener("pagehide", stopOnPageHide);
       void live.stop();
-      if (canonLiveRef.current === live) canonLiveRef.current = null;
+      if (canonLiveRef.current === live) {
+        canonLiveRef.current = null;
+        // A reopened preview owns a new transport. The old cleanup must not
+        // block its automatic start or clear the new transport's UI state.
+        previewFlightRef.current = null;
+      }
       canonFrameRef.current?.close();
       canonFrameRef.current = null;
     };
-  }, [enabled, isCanon]);
+  }, [enabled, isCanon, beginCanonLiveView]);
+
+  useEffect(() => {
+    let current = true;
+    queueMicrotask(() => {
+      const live = canonLiveRef.current;
+      if (!current || !live || !canonAutoConnectRef.current || canonAutoPausedRef.current ||
+        capturingRef.current || previewFlightRef.current || document.visibilityState !== "visible") return;
+      canonMayResumeRef.current = true;
+      beginCanonLiveView(live);
+    });
+    return () => { current = false; };
+  }, [autoConnectCanon, enabled, isCanon, allowCanonPreview, processingFailed, backgroundError, beginCanonLiveView]);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -588,11 +630,11 @@ export function LivePreview({
 
   const error = cameraError || backgroundError;
   useEffect(() => {
-    if (isCanon && error) {
+    if (isCanon && error && (!autoConnectCanon || processingFailed || backgroundError)) {
       canonMayResumeRef.current = false;
       void canonLiveRef.current?.stop();
     }
-  }, [isCanon, error]);
+  }, [isCanon, error, autoConnectCanon, processingFailed, backgroundError]);
   const ready = enabled && sourceReady && !backgroundLoading && !error && renderedBackgroundUrl === backgroundUrl &&
     (!isCanon || (canonLiveActive && !canonTakingPhoto));
   const waitingForCanonPreview = enabled && isCanon && !canonLiveActive && !canonStarting && !error &&
@@ -771,7 +813,9 @@ export function LivePreview({
             {waitingForCanonPreview && (
               <>
                 <p style={{ fontSize: 13, lineHeight: 1.65, color: "#66685e", margin: "0 0 15px" }}>
-                  Start a continuous live-view connection when you’re ready. The mirror may move once on entry; preview does not take still photos. It stops on error and waits for you to start it again.
+                  {autoConnectCanon
+                    ? "Live preview is paused. Start it again to resume automatic connection. Keep the camera powered on and connected by USB."
+                    : "Start a continuous live-view connection when you’re ready. The mirror may move once on entry; preview does not take still photos. It stops on error and waits for you to start it again."}
                 </p>
                 <button type="button" disabled={!allowCanonPreview} onClick={() => startCanonLiveView()} style={{ border: 0, borderRadius: 8, padding: "10px 16px", background: "#58684b", color: "white", cursor: "pointer" }}>
                   Start live preview

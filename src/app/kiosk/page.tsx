@@ -553,6 +553,7 @@ export default function KioskPage() {
                   background={background}
                   enabled={!reviewing && !settingsRefreshing}
                   allowCanonPreview={stage === "idle" && !settingsRefreshing}
+                  autoConnectCanon
                   onCaptureReady={onCaptureReady}
                   onStatusChange={onCameraStatus}
                 />

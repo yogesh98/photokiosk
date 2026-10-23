@@ -6,7 +6,7 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { writeFile } from "node:fs/promises";
 import { JpegFrameParser, GphotoLiveView } from "./camera-live.ts";
-import { CameraController, camera } from "./camera-server.ts";
+import { CameraController, CameraError, camera } from "./camera-server.ts";
 import { POST, GET, DELETE } from "../app/api/camera/live/route.ts";
 
 const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 2, 0xff, 0xd9]);
@@ -58,6 +58,87 @@ function fakeLive(options = {}) {
   });
   return { children, commands, runnerCalls, controller, factory };
 }
+
+test("USB I/O failure is reset before reconnecting at a newly detected port", async () => {
+  const calls = [];
+  let port = "usb:001,008";
+  let resets = 0;
+  const children = [];
+  const controller = new CameraController(async (args) => {
+    calls.push([...args]);
+    if (args.includes("--reset")) { resets++; port = "usb:001,009"; }
+    return { stdout: args.includes("--auto-detect") ? `Canon EOS 5D Mark IV  ${port}\n` : "", stderr: "" };
+  }, {
+    factory: (args) => {
+      calls.push([...args]);
+      assert.equal(args[3], port);
+      const child = new FakeChild();
+      children.push(child);
+      queueMicrotask(() => child.stdout.write(jpeg));
+      return child;
+    },
+  });
+  const old = await controller.startLive();
+  children[0].stderr.write("PTP I/O Error\nError (-7: 'I/O problem')");
+  children[0].close(1);
+  await delay(0);
+  assert.throws(() => controller.liveFrame(old.id), { code: "camera_io" });
+  const current = await controller.startLive();
+  try {
+    assert.equal(resets, 1);
+    assert.deepEqual(calls[2], ["--camera", "Canon EOS 5D Mark IV", "--port", "usb:001,008", "--reset"]);
+    assert.deepEqual(calls[3], ["--auto-detect"]);
+    assert.equal((await controller.getStatus()).connected, true);
+    assert.notEqual(old.id, current.id);
+    // Repeated transport failures cannot reset the USB port in a tight loop.
+    children[1].stderr.write("PTP I/O Error");
+    children[1].close(1);
+    await delay(0);
+    const again = await controller.startLive();
+    assert.equal(resets, 1);
+    await controller.stopLive(again.id);
+    assert.ok(calls.every((args) => !args.includes("--capture-image-and-download")));
+  } finally { await controller.stopLive(current.id).catch(() => {}); }
+});
+
+test("each new live session redetects USB even after a successful status probe", async () => {
+  let detections = 0;
+  const controller = new CameraController(async (args) => ({
+    stdout: args.includes("--auto-detect") ? `Canon EOS 5D Mark IV  usb:001,${++detections}\n` : "", stderr: "",
+  }), {
+    factory: (args) => {
+      assert.equal(args[3], "usb:001,2");
+      const child = new FakeChild();
+      queueMicrotask(() => child.stdout.write(jpeg));
+      return child;
+    },
+  });
+  assert.equal((await controller.getStatus()).connected, true);
+  const session = await controller.startLive();
+  await controller.stopLive(session.id);
+});
+
+test("USB recovery is skipped for another app's busy camera and cancellation never starts a stream", async () => {
+  for (const failure of ["camera_in_use", "camera_io"]) {
+    const calls = [];
+    const cancellation = new AbortController();
+    const controller = new CameraController(async (args) => {
+      calls.push([...args]);
+      if (args.includes("--auto-detect")) return { stdout: detection, stderr: "" };
+      if (args.includes("--reset")) { cancellation.abort(); return { stdout: "", stderr: "" }; }
+      throw new CameraError("Synthetic USB failure", failure);
+    }, { factory: () => assert.fail("No live stream should start") });
+    assert.equal((await controller.getStatus()).connected, false);
+    if (failure === "camera_io") {
+      await assert.rejects(controller.startLive(cancellation.signal), { code: "camera_cancelled" });
+      assert.equal(calls.filter((args) => args.includes("--auto-detect")).length, 1);
+    } else {
+      cancellation.abort();
+      await assert.rejects(controller.startLive(cancellation.signal), { code: "camera_cancelled" });
+      assert.ok(calls.every((args) => !args.includes("--reset")));
+    }
+  }
+});
 
 test("JPEG framing handles every split marker and ignores embedded thumbnail terminators", () => {
   const app = Buffer.from([0xff, 0xe1, 0, 10, 0x45, 0x58, 0xff, 0xd8, 0xff, 0xd9, 0x41, 0x42]);

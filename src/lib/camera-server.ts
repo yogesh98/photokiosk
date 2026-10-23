@@ -153,14 +153,17 @@ export function runGphoto(
           );
         const timedOut =
           /PTP[^\r\n]*(?:timeout|timed out)|(?:timeout|timed out)[^\r\n]*(?:reading|writing|port)/i.test(diagnostic);
+        const ioFailure = /PTP[^\r\n]*I\/O|I\/O problem|Error (?:reading|writing) from the port/i.test(diagnostic);
         return reject(
           new CameraError(
             busy
               ? "Another app or the macOS camera import helper may be using the camera. Close Photos, Preview, Image Capture, and EOS Utility, then reconnect the camera."
               : timedOut
                 ? "The camera timed out while communicating over USB. Wake the camera, check its USB cable, then reconnect it and try again."
+                : ioFailure
+                  ? "The camera's USB connection needs to be recovered. The kiosk will reset the connection and try again."
                 : "The camera command failed. Check the camera and its settings, then try again.",
-            busy ? "camera_in_use" : timedOut ? "camera_timeout" : "camera_command",
+            busy ? "camera_in_use" : timedOut ? "camera_timeout" : ioFailure ? "camera_io" : "camera_command",
             !busy && timedOut ? 504 : 503,
             detail || CONNECT_HELP,
           ),
@@ -258,6 +261,8 @@ export class CameraController {
   private live: LiveSession | null = null;
   private liveStarting = false;
   private lastLive: { id: string; failure: CameraError | null } | null = null;
+  private recoveryCamera: DetectedCamera | null = null;
+  private lastUsbResetAt: number | null = null;
 
   constructor(private readonly run: GphotoRunner = runGphoto, private readonly liveOptions: CameraLiveOptions = {}) {}
 
@@ -295,6 +300,8 @@ export class CameraController {
       failure.status !== 409 &&
       failure.code !== "camera_cancelled"
     ) {
+      if (this.selected && (failure.code === "camera_io" || failure.code === "camera_timeout"))
+        this.recoveryCamera = this.selected;
       this.statusCache = {
         value: {
           connected: false,
@@ -312,6 +319,7 @@ export class CameraController {
   }
 
   private rememberConnected(camera: DetectedCamera) {
+    this.recoveryCamera = null;
     this.statusCache = {
       value: {
         connected: true,
@@ -357,6 +365,25 @@ export class CameraController {
 
   private cameraArgs(camera: DetectedCamera): string[] {
     return ["--camera", camera.model, "--port", camera.port];
+  }
+
+  private async recoverUsb(signal?: AbortSignal): Promise<void> {
+    const camera = this.recoveryCamera;
+    this.recoveryCamera = null;
+    if (!camera || (this.lastUsbResetAt !== null && Date.now() - this.lastUsbResetAt < 30_000)) return;
+    assertCameraRequestActive(signal);
+    this.lastUsbResetAt = Date.now();
+    // Only recover the failed camera, inside the exclusive operation after its
+    // process has closed. Never reset for a busy camera or retry a still shutter.
+    try {
+      await this.run([...this.cameraArgs(camera), "--reset"], { timeoutMs: 10_000, signal });
+    } catch {
+      // A disconnected device may already have a new address. Detect it below
+      // even if the old port cannot be reset.
+    }
+    assertCameraRequestActive(signal);
+    this.selected = null;
+    this.statusCache = null;
   }
 
   async getStatus(): Promise<CameraStatus> {
@@ -424,7 +451,9 @@ export class CameraController {
     try {
       return await this.exclusive("live", async () => {
         assertCameraRequestActive(signal);
-        const detected = this.selected ?? await this.detect(signal);
+        await this.recoverUsb(signal);
+        // Reboots, USB reconnection, and --reset can all change the USB address.
+        const detected = await this.detect(signal);
         assertCameraRequestActive(signal);
         let stream: GphotoLiveView;
         try { stream = new GphotoLiveView(this.cameraArgs(detected), this.liveOptions.factory, this.liveOptions.stream); }

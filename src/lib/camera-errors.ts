@@ -22,7 +22,7 @@ export function recognizedCameraError(error: unknown): CameraError | null {
     typeof candidate.message !== "string" || !candidate.message || candidate.message.length > 1000 ||
     typeof candidate.code !== "string" || ![
       "camera_error", "camera_cancelled", "camera_timeout", "gphoto_unavailable",
-      "camera_process", "camera_in_use", "camera_command", "camera_busy",
+      "camera_process", "camera_in_use", "camera_command", "camera_busy", "camera_io",
       "camera_disconnected", "camera_ambiguous", "camera_configuration",
       "invalid_configuration", "invalid_camera_image", "jpeg_required", "camera_live_expired",
     ].includes(candidate.code) ||

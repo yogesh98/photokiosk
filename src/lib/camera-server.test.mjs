@@ -39,6 +39,14 @@ function failWithDiagnostics(stdout, stderr, options = { timeoutMs: 1000 }) {
   ], options, process.execPath);
 }
 
+test("PTP I/O errors are transport failures rather than rejected exposure settings", async () => {
+  await assert.rejects(failWithDiagnostics("", "PTP I/O Error\nError (-7: 'I/O problem')"), { code: "camera_io", status: 503 });
+  const { controller } = fakeCamera({ beforeCommand: async () => {
+    throw new CameraError("PTP I/O Error", "camera_io");
+  } });
+  await assert.rejects(controller.configure({ iso: "400", aperture: "5.6", shutterSpeed: "1/125" }), { code: "camera_io" });
+});
+
 function fakeCamera(options = {}) {
   const calls = [];
   const directories = [];
