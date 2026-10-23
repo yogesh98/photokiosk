@@ -690,15 +690,6 @@
   font-weight: 500;
   line-height: 1.35;
 }
-.kiosk-share-card a {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 14px;
-  font-size: clamp(18px, 2.2vw, 24px);
-  font-weight: 700;
-  color: var(--k-blue-deep);
-}
 .kiosk-share-loading {
   display: flex;
   align-items: center;
@@ -736,7 +727,7 @@
 }
 .kiosk-review-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 .kiosk-review-actions > button {

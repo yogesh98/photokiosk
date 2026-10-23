@@ -3,7 +3,7 @@
 /* eslint-disable @next/next/no-img-element */
 
 import { useEffect, useState } from "react";
-import { ArrowUpRight, LoaderCircle, RefreshCw } from "lucide-react";
+import { LoaderCircle, RefreshCw } from "lucide-react";
 import type { PhotoSession } from "@/lib/kiosk-types";
 
 export function PhotoSharing({ sharing, busy, error, onRetry }: {
@@ -28,7 +28,7 @@ export function PhotoSharing({ sharing, busy, error, onRetry }: {
         }
       })
       .catch(() => {
-        if (current) setQrError("The QR code could not be displayed. Open the gallery link below.");
+        if (current) setQrError("The QR code could not be displayed. Please ask your host for help.");
       });
     return () => { current = false; };
   }, [galleryUrl]);
@@ -51,7 +51,6 @@ export function PhotoSharing({ sharing, busy, error, onRetry }: {
         <div className="kiosk-share-text">
           <h3>Scan to save</h3>
           <p>Point your phone’s camera here to see and download all three photos.</p>
-          <a href={galleryUrl} target="_blank" rel="noreferrer">Open photo gallery <ArrowUpRight size={22} /></a>
         </div>
       </div>
     );

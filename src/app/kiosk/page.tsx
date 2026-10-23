@@ -16,7 +16,6 @@ import {
   ArrowRight,
   Camera,
   Check,
-  Download,
   LoaderCircle,
   Mail,
   RefreshCw,
@@ -372,15 +371,6 @@ export default function KioskPage() {
     }
   }
 
-  function downloadPhotos() {
-    photos.forEach((photo, index) => {
-      const link = document.createElement("a");
-      link.href = photo;
-      link.download = `still-memory-${index + 1}.jpg`;
-      link.click();
-    });
-  }
-
   const reviewing =
     stage === "review" || stage === "sending" || stage === "saving";
   const isCapturing = stage === "capturing";
@@ -635,7 +625,7 @@ export default function KioskPage() {
                 )}
                 {!canShare && !canEmail && (
                   <p className="kiosk-share-note">
-                    Your three photos are ready to download on this booth.
+                    Ask your host for a copy of your photos.
                   </p>
                 )}
                 {error && !showEmailSheet && (
@@ -672,10 +662,6 @@ export default function KioskPage() {
                   >
                     <RefreshCw size={32} strokeWidth={2.4} />
                     Retake
-                  </button>
-                  <button type="button" onClick={downloadPhotos}>
-                    <Download size={32} strokeWidth={2.4} />
-                    Download
                   </button>
                   <button
                     type="button"
@@ -797,7 +783,7 @@ export default function KioskPage() {
                         ? "Scan to keep them"
                         : canEmail
                           ? "Get them by email"
-                          : "Download them"}
+                          : "See your photos"}
                     </li>
                   </ol>
                 </>
