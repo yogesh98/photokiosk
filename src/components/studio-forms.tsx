@@ -638,55 +638,80 @@ export function CameraSettings({
                         : camera.error || "Connect the camera by USB, then use Check connection. Install gphoto2 on the studio computer to enable direct tethering."}
                   </p>
                 </div>
-                <div className="fields-three">
-                  <label className="field">
-                    ISO
-                    <select
-                      value={draft.iso}
-                      onChange={(e) =>
-                        setDraft({ ...draft, iso: e.target.value })
-                      }
-                    >
-                      {["100", "200", "400", "800", "1600", "3200"].map((v) => (
-                        <option key={v}>{v}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field">
-                    Aperture
-                    <select
-                      value={draft.aperture}
-                      onChange={(e) =>
-                        setDraft({ ...draft, aperture: e.target.value })
-                      }
-                    >
-                      {["2.8", "4", "5.6", "8", "11", "16"].map((v) => (
-                        <option key={v} value={v}>
-                          f/{v}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="field">
-                    Shutter speed
-                    <select
-                      value={draft.shutterSpeed}
-                      onChange={(e) =>
-                        setDraft({ ...draft, shutterSpeed: e.target.value })
-                      }
-                    >
-                      {["1/30", "1/60", "1/125", "1/160", "1/250", "1/500"].map(
-                        (v) => (
-                          <option key={v}>{v}</option>
-                        ),
-                      )}
-                    </select>
-                  </label>
-                </div>
-                <p className="field-hint">
-                  Set your Canon to Manual (M) and JPEG capture. Preferences
-                  apply to the connected camera when saved.
-                </p>
+                <label className="field">
+                  Exposure control
+                  <select
+                    value={draft.exposureMode}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        exposureMode: e.target.value as KioskSettings["camera"]["exposureMode"],
+                      })
+                    }
+                  >
+                    <option value="auto">Camera automatic (P)</option>
+                    <option value="manual">Manual settings (M)</option>
+                  </select>
+                </label>
+                {draft.exposureMode === "manual" ? (
+                  <>
+                    <div className="fields-three">
+                      <label className="field">
+                        ISO
+                        <select
+                          value={draft.iso}
+                          onChange={(e) =>
+                            setDraft({ ...draft, iso: e.target.value })
+                          }
+                        >
+                          {["Auto", "100", "200", "400", "800", "1600", "3200"].map((v) => (
+                            <option key={v}>{v}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field">
+                        Aperture
+                        <select
+                          value={draft.aperture}
+                          onChange={(e) =>
+                            setDraft({ ...draft, aperture: e.target.value })
+                          }
+                        >
+                          {["2.8", "4", "5.6", "8", "11", "16"].map((v) => (
+                            <option key={v} value={v}>
+                              f/{v}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="field">
+                        Shutter speed
+                        <select
+                          value={draft.shutterSpeed}
+                          onChange={(e) =>
+                            setDraft({ ...draft, shutterSpeed: e.target.value })
+                          }
+                        >
+                          {["1/30", "1/60", "1/125", "1/160", "1/250", "1/500"].map(
+                            (v) => (
+                              <option key={v}>{v}</option>
+                            ),
+                          )}
+                        </select>
+                      </label>
+                    </div>
+                    <p className="field-hint">
+                      Set your Canon to Manual (M) and JPEG or RAW+JPEG capture.
+                      Preferences apply to the connected camera when saved.
+                    </p>
+                  </>
+                ) : (
+                  <p className="field-hint">
+                    Set the camera’s mode dial to P and ISO to Auto. The camera
+                    chooses exposure; the booth leaves ISO, aperture, and shutter
+                    speed unchanged. Choose JPEG or RAW+JPEG capture.
+                  </p>
+                )}
               </>
             ) : (
               <>

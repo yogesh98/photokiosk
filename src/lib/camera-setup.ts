@@ -12,13 +12,13 @@ interface CameraSetupActions {
   save: (preferences: CameraPreferences, message: string) => Promise<boolean>;
 }
 
-/** Apply exposure before saving: saving can remount the form that displays errors. */
+/** Only apply exposure overrides in manual mode, before saving can remount the form. */
 export async function saveCameraSetup(
   preferences: CameraPreferences,
   actions: CameraSetupActions,
 ): Promise<boolean> {
   let message = "Camera preferences saved.";
-  if (preferences.mode === "canon") {
+  if (preferences.mode === "canon" && preferences.exposureMode === "manual") {
     const status = await actions.getStatus();
     if (status.connected) {
       const { iso, aperture, shutterSpeed } = preferences;
@@ -28,6 +28,8 @@ export async function saveCameraSetup(
       message =
         "Camera preferences saved. Connect your Canon and save again to apply exposure.";
     }
+  } else if (preferences.mode === "canon") {
+    message = "Camera preferences saved. Set the camera to P and ISO Auto for automatic exposure.";
   }
   return actions.save(preferences, message);
 }

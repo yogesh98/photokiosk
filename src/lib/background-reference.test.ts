@@ -15,7 +15,7 @@ import { POST as referencePOST } from "../app/api/ai/reference/route";
 import { GET as referenceGET } from "../app/api/ai/reference/[id]/route";
 import { GET as kioskGET } from "../app/api/kiosk/route";
 
-test("reference camera identity covers every camera setting and rendering geometry", () => {
+test("browser reference identity preserves camera preferences and rendering geometry", () => {
   const camera = structuredClone(DEFAULT_SETTINGS.camera);
   const key = getBackgroundReferenceCameraKey(camera);
   assert.equal(key, getBackgroundReferenceCameraKey({ ...camera }));
@@ -25,6 +25,29 @@ test("reference camera identity covers every camera setting and rendering geomet
   }
   assert.ok(key.includes(String(BACKGROUND_REFERENCE_WIDTH)) && key.includes(String(BACKGROUND_REFERENCE_HEIGHT)));
   assert.equal(isBackgroundReferenceCompatible(null, camera), false);
+});
+
+test("automatic Canon reference identity ignores unused manual exposure preferences", () => {
+  const camera = { ...DEFAULT_SETTINGS.camera, mode: "canon" as const, exposureMode: "auto" as const };
+  const key = getBackgroundReferenceCameraKey(camera);
+  assert.equal(getBackgroundReferenceCameraKey({ ...camera, iso: "800", aperture: "8", shutterSpeed: "1/60" }), key);
+  for (const patch of [{ exposureMode: "manual" as const }, { mode: "browser" as const },
+    { deviceId: "another-camera" }, { mirror: !camera.mirror }]) {
+    assert.notEqual(getBackgroundReferenceCameraKey({ ...camera, ...patch }), key);
+  }
+});
+
+test("legacy manual and browser references stay compatible only when capture behavior matches", () => {
+  const camera = { ...DEFAULT_SETTINGS.camera, mode: "canon" as const, exposureMode: "manual" as const };
+  const legacyKey = (mode: "canon" | "browser") => JSON.stringify([
+    "background-reference-v1", BACKGROUND_REFERENCE_WIDTH, BACKGROUND_REFERENCE_HEIGHT,
+    mode, camera.deviceId, camera.iso, camera.aperture, camera.shutterSpeed, camera.mirror,
+  ]);
+  assert.equal(getBackgroundReferenceCameraKey(camera), legacyKey("canon"));
+  assert.notEqual(getBackgroundReferenceCameraKey({ ...camera, exposureMode: "auto" }), legacyKey("canon"));
+  for (const exposureMode of ["auto", "manual"] as const) {
+    assert.equal(getBackgroundReferenceCameraKey({ ...camera, mode: "browser", exposureMode }), legacyKey("browser"));
+  }
 });
 
 describe("private captured background references", { concurrency: false }, () => {
@@ -109,6 +132,18 @@ describe("private captured background references", { concurrency: false }, () =>
     const settings = await getSettings();
     assert.deepEqual(settings.backgroundReference, second);
     assert.equal(isBackgroundReferenceCompatible(second, settings.camera), false);
+  });
+
+  test("switching Canon exposure invalidates the reference while preserving its image", async () => {
+    const manual = await updateSettings({ camera: { mode: "canon", exposureMode: "manual" } });
+    const key = getBackgroundReferenceCameraKey(manual.camera);
+    const reference = (await saveBackgroundReference(file(), key)).backgroundReference!;
+    const automatic = await updateSettings({ camera: { exposureMode: "auto" } });
+    assert.equal(isBackgroundReferenceCompatible(reference, automatic.camera), false);
+    assert.deepEqual(automatic.backgroundReference, reference);
+    assert.ok((await readBackgroundReference(reference.id)).length > 0);
+    const restored = await updateSettings({ camera: { exposureMode: "manual" } });
+    assert.equal(isBackgroundReferenceCompatible(reference, restored.camera), true);
   });
 
   test("serializes concurrent reference writes and keeps both immutable images readable", async () => {

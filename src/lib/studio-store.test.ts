@@ -54,6 +54,7 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     assert.equal(studio.settings.backgroundMode, "green-screen");
     assert.equal(studio.settings.aiModel, DEFAULT_AI_MODEL);
     assert.equal(studio.settings.aiAcceleration, DEFAULT_AI_ACCELERATION);
+    assert.equal(studio.settings.camera.exposureMode, "auto");
     assert.deepEqual(studio.settings.backgroundSequence, { mode: "single", photoIds: ["coast", "coast", "coast"] });
     assert.equal(studio.settings.gmail.configured, false);
     studio.settings.eventName = "Changed in memory";
@@ -86,6 +87,80 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     await assert.rejects(updateSettings({ gmail: { appPassword: "normal-password" } }), /16-character/);
     await assert.rejects(updateSettings({ gmail: { senderName: "Sender\r\nBcc: attacker@example.com" } }), /single line/);
     assert.throws(() => validateEmail("a@example.com\r\nBcc:b@example.com"), /valid email/);
+  });
+
+  test("migrates older booths to auto exposure while preserving manual preferences and all booth data", async () => {
+    const directory = await isolated();
+    await configureGmail();
+    await updateSettings({
+      eventName: "An existing camera booth", backgroundMode: "ai", aiModel: "modnet",
+      camera: { mode: "canon", deviceId: "existing-camera", iso: "1600", aperture: "8", shutterSpeed: "1/250", mirror: false },
+      backgroundSequence: { mode: "rotate", photoIds: ["coast", "mountains", "desert"] },
+    });
+    await createSession(sessionInput());
+    const filename = path.join(directory, "studio.json");
+    const legacy = JSON.parse(await readFile(filename, "utf8"));
+    delete legacy.settings.camera.exposureMode;
+    await writeFile(filename, JSON.stringify(legacy));
+
+    const migrated = await getSettings();
+    const expectedCamera = { ...legacy.settings.camera, exposureMode: "auto" };
+    assert.deepEqual(migrated.camera, expectedCamera);
+    assert.deepEqual(JSON.parse(await readFile(filename, "utf8")), {
+      ...legacy,
+      settings: { ...legacy.settings, camera: expectedCamera },
+    });
+    assert.deepEqual((await getSettings()).camera, expectedCamera);
+    assert.deepEqual((await (await kioskGET(request("/api/kiosk"))).json()).settings.camera, expectedCamera);
+  });
+
+  test("round-trips camera exposure modes through settings, persistence, and the guest kiosk", async () => {
+    const directory = await isolated();
+    const preferences = { iso: "800", aperture: "4", shutterSpeed: "1/200" };
+    await updateSettings({ camera: preferences });
+    for (const exposureMode of ["manual", "auto", "manual"] as const) {
+      const response = await settingsPATCH(request("/api/settings", {
+        ...json({ camera: { exposureMode } }), method: "PATCH",
+      }));
+      assert.equal(response.status, 200);
+      const expectedCamera = { ...(await getSettings()).camera, ...preferences, exposureMode };
+      assert.deepEqual((await response.json()).settings.camera, expectedCamera);
+      assert.deepEqual((await getSettings()).camera, expectedCamera);
+      const persisted = JSON.parse(await readFile(path.join(directory, "studio.json"), "utf8"));
+      assert.deepEqual(persisted.settings.camera, expectedCamera);
+      assert.deepEqual((await (await kioskGET(request("/api/kiosk"))).json()).settings.camera, expectedCamera);
+    }
+  });
+
+  test("rejects invalid camera exposure modes atomically, including mixed settings patches", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const before = await readFile(filename, "utf8");
+    for (const exposureMode of ["program", "Auto", "", " auto ", null, false, 1, {}, []]) {
+      const response = await settingsPATCH(request("/api/settings", {
+        ...json({ eventName: "Should not save", camera: { mode: "canon", iso: "1600", exposureMode } }), method: "PATCH",
+      }));
+      assert.equal(response.status, 400);
+      assert.match((await response.json()).error, /Choose auto or manual camera exposure/);
+      assert.equal(await readFile(filename, "utf8"), before);
+    }
+    await assert.rejects(updateSettings({
+      camera: { exposureMode: "manual", iso: "1600" }, gmail: { senderName: "Invalid\nSender" },
+    }), /single line/);
+    assert.equal(await readFile(filename, "utf8"), before);
+  });
+
+  test("preserves saved data with invalid camera exposure modes for recovery", async () => {
+    for (const exposureMode of ["program", "Auto", "", null, false, 1, {}, []]) {
+      const directory = await isolated();
+      const filename = path.join(directory, "studio.json");
+      const invalid = JSON.parse(await readFile(filename, "utf8"));
+      invalid.settings.camera.exposureMode = exposureMode;
+      const serialized = JSON.stringify(invalid);
+      await writeFile(filename, serialized);
+      await assert.rejects(readStudio(), (error: unknown) => error instanceof StudioError && error.status === 500);
+      assert.equal(await readFile(filename, "utf8"), serialized);
+    }
   });
 
   test("migrates legacy green screen choices without changing the original settings", async () => {

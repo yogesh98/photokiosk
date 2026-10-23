@@ -145,9 +145,11 @@ brew install gphoto2
 sudo apt install gphoto2
 ```
 
-Connect a USB data cable, switch the camera on, select still-photo mode and Manual (M) exposure, and choose JPEG or RAW+JPEG image quality. Close EOS Utility, Photos, Image Capture, and any other software claiming the camera. The app never terminates those applications itself.
+Connect a USB data cable, switch the camera on, select still-photo mode, and choose JPEG or RAW+JPEG image quality. For automatic exposure, set the camera's physical mode dial to **P (Program)** and ISO to **Auto**. Close EOS Utility, Photos, Image Capture, and any other software claiming the camera. The app never terminates those applications itself.
 
-Choose **Canon tethering** in Admin. ISO, aperture, and shutter speed are applied to the connected camera before preferences are saved, so a rejected setting remains visible in the form. Disconnected preferences can be saved; connect the Canon and save again to apply exposure. Lens limitations or camera mode can prevent a requested setting.
+Choose **Canon tethering** in Admin. **Exposure control → Camera automatic (P)** is the default, including for older saved booth settings. The app leaves ISO, aperture, and shutter speed unchanged and does not switch the physical mode dial. Set P and ISO Auto on the camera so it chooses the exposure. Existing manual values are retained for later use.
+
+For fixed exposure, choose **Manual settings (M)** and set the camera's dial to M. ISO, aperture, and shutter speed are applied to the connected camera before preferences are saved, so a rejected setting remains visible in the form. Disconnected manual preferences can be saved; connect the Canon and save again to apply them. Lens limitations or camera mode can prevent a requested setting. Switching exposure control can require recapturing an empty-scene background reference; keep exposure locked while using that reference model.
 
 Press **Start live preview** to begin Canon live view, and **Stop live preview** to end it. The app runs one persistent `gphoto2 --capture-movie --stdout` process and displays its streamed preview JPEGs; it does not launch another camera process or take a full-resolution still for each preview frame. This is the [preview-streaming mode documented by gphoto](https://gphoto.sourceforge.io/doc/remote/), and the Canon must stay in still-photo mode. The mirror can move when live view starts or stops, rather than cycling for each displayed frame.
 

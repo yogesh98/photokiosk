@@ -19,6 +19,7 @@ import {
   type Background,
   type BackgroundMode,
   type BackgroundReference,
+  type CameraExposureMode,
   type KioskSettings,
   type PhotoSession,
   type StudioData,
@@ -62,6 +63,10 @@ const BUILTINS: Background[] = [
 
 function isBackgroundMode(value: unknown): value is BackgroundMode {
   return value === "green-screen" || value === "ai" || value === "off";
+}
+
+function isCameraExposureMode(value: unknown): value is CameraExposureMode {
+  return value === "auto" || value === "manual";
 }
 
 export function dataDirectory() {
@@ -127,6 +132,8 @@ async function withStore<T>(
       if (
         state.version !== 1 ||
         !state.settings ||
+        (state.settings.camera.exposureMode !== undefined &&
+          !isCameraExposureMode(state.settings.camera.exposureMode)) ||
         (state.settings.backgroundMode !== undefined &&
           !isBackgroundMode(state.settings.backgroundMode)) ||
         (state.settings.aiModel !== undefined &&
@@ -156,6 +163,11 @@ async function withStore<T>(
         gmailAppPassword: "",
         b2ApplicationKey: "",
       };
+      changed = true;
+    }
+    // Existing booths start in auto while retaining their manual preferences.
+    if (state.settings.camera.exposureMode === undefined) {
+      state.settings.camera.exposureMode = DEFAULT_SETTINGS.camera.exposureMode;
       changed = true;
     }
     // Older booths stored only the green screen toggle. Preserve their choice.
@@ -325,6 +337,11 @@ export async function updateSettings(input: unknown): Promise<KioskSettings> {
         if (camera.mode !== "browser" && camera.mode !== "canon")
           throw new StudioError("Choose browser or Canon camera mode.");
         settings.camera.mode = camera.mode;
+      }
+      if ("exposureMode" in camera) {
+        if (!isCameraExposureMode(camera.exposureMode))
+          throw new StudioError("Choose auto or manual camera exposure.");
+        settings.camera.exposureMode = camera.exposureMode;
       }
       for (const key of [
         "deviceId",
