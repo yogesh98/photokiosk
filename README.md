@@ -21,7 +21,62 @@ npm run build
 npm start
 ```
 
-Dev and production bind to `127.0.0.1`. Open the kiosk in a second browser window and use its fullscreen button. Keep the studio server running throughout the event. The app needs a writable local disk; it is designed for one Node process and one booth, rather than static or serverless hosting.
+Dev, production, and the background service bind to `0.0.0.0` on port 3000. For a manual session, open the kiosk in a second browser window and use its fullscreen button. For automatic startup and full-screen display on macOS, use the installer below. Keep the studio server running throughout the event. The app needs a writable local disk; it is designed for one Node process and one booth, rather than static or serverless hosting.
+
+### Access Admin from another computer or phone
+
+Connect both devices to the same trusted local network, then open `http://<booth-computer-ip>:3000/admin` on the other device. Use the booth computer's IPv4 address from macOS **System Settings → Network → the connected interface → Details → TCP/IP**, for example `http://192.168.1.50:3000/admin`. Include `http://` and `:3000`. Admin settings, uploads, and gallery access work through that address; the server and attached Canon camera continue running on the booth computer. Continue opening the booth's webcam kiosk at `http://127.0.0.1:3000/kiosk`, since browser webcam access requires localhost or HTTPS.
+
+If the connection fails, allow incoming connections for the server's Node executable in the macOS firewall and check that Wi-Fi client isolation is disabled. The IP can change when the computer reconnects; a DHCP reservation on your router keeps it stable. Development mode needs a restart after the IP changes to refresh its allowed asset origins. This address is for local-network access; access from a different internet connection requires a VPN or a separate authenticated HTTPS setup. Admin has no login, so use a trusted network and do not forward port 3000 to the internet.
+
+### Run in the background and redeploy after pulling (macOS)
+
+From this checkout, with Node.js 22 or later, npm, and Google Chrome installed in `/Applications`, run once:
+
+```bash
+npm run deploy:install
+```
+
+This installs two per-user macOS LaunchAgents: the app server (`com.still.photokiosk`) and the display (`com.still.photokiosk.display`). It builds the app, serves Admin at `http://127.0.0.1:3000/admin`, and opens `http://127.0.0.1:3000/kiosk` on the display in Chrome's full-screen kiosk mode. The display waits for the server to be ready before opening Chrome. Both services stay running after closing the terminal, restart after a crash, and start when this macOS user logs in. Closing the kiosk browser also causes it to reopen. The display service keeps the screen and computer awake while running. Stop any separately running dev/production server on port 3000 first.
+
+After a reboot, log in to this macOS user to start the booth automatically; the services do not bypass the macOS login screen. Leave this user logged in during an event. Chrome uses a dedicated profile in ignored `.deploy/chrome-profile/`, preserving the booth's camera permission across restarts. If using a webcam, allow camera access in this Chrome profile the first time, and allow macOS camera access if requested. Regular browser windows can still be used for Admin.
+
+If the server service is already installed, enable just the automatic display without rebuilding:
+
+```bash
+npm run kiosk:install
+```
+
+The installer sets this checkout's local `core.hooksPath` to `.githooks`. After a successful merge or fast-forward pull, `post-merge` installs locked dependencies, builds a standalone release, and restarts the service. `post-rewrite` does the same after a rebase, including `git pull --rebase`. These hooks also run after manual merges/rebases; a pull reporting “Already up to date” does not rebuild. Other clones must run the installer separately. Commit the hook and deployment files so future checkouts have them.
+
+The existing release keeps serving while the next build runs. A failed install/build leaves it running; a failed server health check restores the previous release. Successful redeployment briefly interrupts the booth and restarts the installed kiosk display to load the new app, so pull between guest sessions. Manually opened browser windows still need a reload. The two most recent builds are kept in ignored `.deploy/releases/`; that folder also contains local service configuration and logs. An interrupted deployment can leave `.deploy/lock`; remove that directory only after confirming no deployment is running.
+
+**Saved settings survive rebuilds.** Backblaze and Gmail credentials entered in Admin, booth preferences, backgrounds, and photos remain in the checkout's `.data/` folder (or `PHOTO_KIOSK_DATA_DIR` if configured). Rebuilding never deletes that folder. Runtime `.env` files are loaded from the checkout, so `.env.local` is preserved too; relative data-directory overrides are resolved against the checkout. Optional AI weights and `.venv-ai` are reused across releases. Back up the data folder separately.
+
+```bash
+npm run deploy          # Rebuild/redeploy manually, or restart after deploy:stop
+npm run deploy:status   # Inspect the launchd service
+npm run deploy:stop     # Stop the server and display until the next deploy or login
+npm run kiosk:status    # Inspect the automatic display service
+npm run kiosk:stop      # Close the kiosk display while leaving the server running
+npm run kiosk:start     # Reopen/restart the kiosk display
+npm run kiosk:uninstall # Remove automatic display startup; keep the server
+npm run test:deploy     # Check deployment hooks and display startup/recovery
+tail -f .deploy/server.log .deploy/server.error.log
+tail -f .deploy/display.log .deploy/display.error.log
+```
+
+The hook records the installer's absolute Node path in `.deploy/node`, so `git pull` can deploy even if the Git client's PATH lacks Node. Keep that runtime installed; rerun `deploy:install` using the new Node executable after moving/upgrading it. To remove the services and pull automation, run `npm run kiosk:uninstall`, run `npm run deploy:stop`, remove `~/Library/LaunchAgents/com.still.photokiosk.plist`, and run `git config --local --unset core.hooksPath`. Keep `.data/` and any custom data directory.
+
+### Match touch input to the rotated display (macOS)
+
+For this booth's CVTouch USB panel (`1ff7:0013`), run `npm run touch:install`, then enable **Still Touch** in **System Settings → Privacy & Security → Accessibility**. The installer compiles a small local app with Apple's command-line tools and installs a separate login service. It rotates the panel's absolute pointer input to match the display's current 0°, 90°, 180°, or 270° orientation. It applies throughout macOS and Chrome, passes other input devices through unchanged, and pauses if more than one display is active. The booth server and kiosk browser can keep running during installation.
+
+Use `npm run touch:status` to inspect it and `.deploy/touch.log` to check activation and received touch presses. `npm run touch:stop` temporarily restores the panel's original mapping; `npm run touch:start` resumes correction. `npm run touch:uninstall` removes automatic startup. The local app is `.deploy/Still Touch.app`; if it is absent from Accessibility, add it with the **+** button. Rebuilding the helper can require renewing its permission. Its device attribution uses an undocumented macOS event field and must be checked after major macOS updates. Test taps near all four corners on the physical display after setup.
+
+If touches are slightly offset, run `npm run touch:calibrate`. Tap the center of each of the nine crosshairs, lifting your finger between targets. The helper fits offset, scale, and axis skew, rejects inconsistent readings, and saves the result to ignored `.deploy/touch-calibration.json`. Then check alignment against the targets and tap **Done**. **Esc** cancels unfinished calibration without changing the previous mapping. During calibration the fullscreen overlay consumes panel taps so they cannot trigger kiosk actions. Regular mouse input cannot supply calibration samples. The saved correction loads at login only for the same display and rotation; recalibrate after physically moving the touch frame or changing orientation.
+
+After restarting the Mac, log in to the **kiosk** user. The touch service automatically starts and reloads the saved calibration using its existing Accessibility permission. Restarting the service with `npm run touch:start` does the same; it waits for macOS to finish stopping the previous process. No reinstall or recalibration is needed for ordinary restarts or app redeployments. Keep `.deploy/Still Touch.app` and `.deploy/touch-calibration.json` in place.
 
 ## Set up the booth
 
@@ -129,7 +184,7 @@ npm start
 
 Open `http://127.0.0.1:3000/admin` on that same machine and choose your background mode. Run `npm ci` on Ubuntu itself so native dependencies such as Sharp match Linux; do not copy `node_modules` from a Mac. A normal desktop session with browser WebGL support is required for MediaPipe's image handling, including in CPU mode. Integrated graphics is sufficient for the browser path; CUDA, Python, and a separate AI service are not required for the people models. Python is needed for BiRefNet, BackgroundMattingV2, and the optional native acceleration setup above. Unsupported browser graphics configurations show an error rather than saving an unprocessed photo.
 
-Webcams use the browser's camera permissions. For Canon USB tethering, also install `gphoto2` (`sudo apt install gphoto2`) and verify `gphoto2 --auto-detect` works as the same user running the booth. Close photo-import apps that have claimed the camera. Keep the application bound to localhost.
+Webcams use the browser's camera permissions. For Canon USB tethering, also install `gphoto2` (`sudo apt install gphoto2`) and verify `gphoto2 --auto-detect` works as the same user running the booth. Close photo-import apps that have claimed the camera. Keep the webcam kiosk on localhost; Admin can use the booth computer's network IP.
 
 ## Canon EOS 5D Mark IV
 
@@ -202,7 +257,7 @@ The local server needs internet access to upload. Once uploaded, the gallery rem
 
 `.data/` contains the studio settings, normalized background uploads, captured JPEGs, recipient addresses, B2 sharing status/URLs, and server-side Gmail and B2 secrets. It is excluded from Git and build tracing. The app creates directories with mode `0700` and files with mode `0600`; secrets are stored locally and are never returned by an API. Back up this folder if you need to preserve your event. Do not share it or commit it. Enabling B2 also creates the public cloud copies described above.
 
-All API routes require a local host and reject cross-origin browser requests. This is a local studio, with no remote login or multi-operator access model. Guest configuration responses exclude gallery photos, recipients, delivery history, and sender settings. Do not expose the server on a public or shared network.
+All API routes accept localhost and IPv4 addresses currently assigned to the booth computer, and reject unrelated hostnames and cross-origin browser requests. Admin is accessible to devices on the same trusted network and has no login or multi-operator coordination. Guest configuration responses exclude gallery photos, recipients, delivery history, and sender settings. Keep access on a trusted network or VPN.
 
 ## Checks
 

@@ -1,0 +1,4 @@
+#!/bin/sh
+# A pull configured to rebase uses post-rewrite instead of post-merge.
+[ "$1" = rebase ] || exit 0
+exec /bin/sh "$(git rev-parse --show-toplevel)/scripts/post-pull.sh"

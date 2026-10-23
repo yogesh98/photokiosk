@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { after, before, describe, test } from "node:test";
 import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import sharp from "sharp";
@@ -595,7 +595,7 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     assert.deepEqual(next.deliveries?.map((delivery) => delivery.email), ["earlier@example.com", "guest@example.com", "next@example.com"]);
   });
 
-  test("loopback and same-origin checks reject remote hosts, cross-origin posts, and DNS rebinding", async () => {
+  test("loopback and same-origin checks reject unknown hosts, cross-origin posts, and DNS rebinding", async () => {
     assert.doesNotThrow(() => assertLocalRequest(request("/api/studio")));
     assert.doesNotThrow(() => assertLocalRequest(request("/api/settings", { headers: { origin: "http://127.0.0.1:3000" } })));
     assert.doesNotThrow(() => assertLocalRequest(new Request("http://localhost:3000/api/studio", { headers: { host: "127.0.0.1:3000", origin: "http://127.0.0.1:3000" } })));
@@ -607,6 +607,51 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     const denied = await studioGET(request("/api/studio", { headers: { origin: "https://evil.example.com" } }));
     assert.equal(denied.status, 403);
     assert.equal(typeof (await denied.json()).error, "string");
+  });
+
+  test("network IP access loads Admin and saves settings while rejecting unrelated hosts and origins", async (t) => {
+    await isolated();
+    let address = "192.168.50.20";
+    t.mock.method(os, "networkInterfaces", () => ({
+      en0: [{ address, family: "IPv4", internal: false }],
+    }));
+    const lanRequest = (pathname: string, init: RequestInit = {}) => new Request(`http://${address}:3000${pathname}`, {
+      ...init,
+      headers: { host: `${address}:3000`, origin: `http://${address}:3000`, ...init.headers },
+    });
+    const studio = await studioGET(lanRequest("/api/studio"));
+    assert.equal(studio.status, 200);
+    assert.equal((await studio.json()).backgrounds.length, 6);
+    const saved = await settingsPATCH(lanRequest("/api/settings", {
+      ...json({ eventName: "Managed from another computer" }), method: "PATCH",
+    }));
+    assert.equal(saved.status, 200);
+    assert.equal((await saved.json()).settings.eventName, "Managed from another computer");
+    for (const hostname of ["localhost", "0.0.0.0"]) {
+      assert.doesNotThrow(() => assertLocalRequest(new Request(`http://${hostname}:3000/api/studio`, {
+        headers: { host: `${address}:3000`, origin: `http://${address}:3000` },
+      })));
+    }
+    const deniedHeaders: Record<string, string>[] = [
+      { host: "192.168.50.99:3000" },
+      { host: `${address}:4000` },
+      { host: "booth.example.com:3000" },
+      { host: `${address}:3000@evil.example.com:3000` },
+      { origin: "http://192.168.50.99:3000" },
+      { origin: "http://localhost:3000" },
+      { origin: `https://${address}:3000` },
+      { "sec-fetch-site": "cross-site" },
+    ];
+    for (const headers of deniedHeaders) {
+      assert.equal((await studioGET(lanRequest("/api/studio", { headers }))).status, 403, JSON.stringify(headers));
+    }
+    assert.equal((await studioGET(new Request("http://192.168.50.99:3000/api/studio", {
+      headers: { host: `${address}:3000` },
+    }))).status, 403);
+    const oldRequest = lanRequest("/api/studio");
+    address = "10.0.0.42";
+    assert.equal((await studioGET(lanRequest("/api/studio"))).status, 200);
+    assert.equal((await studioGET(oldRequest)).status, 403);
   });
 
   test("HTTP handlers persist sessions, serve JPEGs, reject malformed bodies, and redact secrets", async () => {

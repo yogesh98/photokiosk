@@ -8,6 +8,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import sharp from "sharp";
 import { unstable_rethrow } from "next/navigation";
 import { DEFAULT_AI_ACCELERATION, DEFAULT_AI_MODEL, isAiAcceleration, isAiModelId } from "./ai-models";
@@ -774,13 +775,20 @@ export async function readMedia(parts: string[]): Promise<Buffer> {
   }
 }
 
-/** This desktop booth deliberately accepts loopback requests only; do not expose it on a LAN. */
+/** Accept this computer's loopback and network IPs, retaining browser origin checks. */
 export function assertLocalRequest(request: Request) {
   const url = new URL(request.url);
-  const local = (hostname: string) =>
-    ["localhost", "127.0.0.1", "[::1]", "::1"].includes(hostname.toLowerCase());
+  // Read interfaces per request so changing Wi-Fi/DHCP addresses needs no restart.
+  // Accept only IPs assigned to this computer, never arbitrary LAN IPs or DNS names.
+  const hosts = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const address of addresses ?? []) {
+      if (!address.internal && address.family === "IPv4") hosts.add(address.address);
+    }
+  }
+  const local = (hostname: string) => hosts.has(hostname.toLowerCase());
   const host = request.headers.get("host");
-  // Next can normalize request.url to localhost even when the browser uses 127.0.0.1.
+  // Next can normalize request.url to its bind address instead of the browser's IP.
   // Validate both authorities and the port, then compare Origin to the browser's actual Host.
   let browserURL = url;
   if (host) {
@@ -788,7 +796,7 @@ export function assertLocalRequest(request: Request) {
       browserURL = new URL(`${url.protocol}//${host}`);
     } catch {
       throw new StudioError(
-        "This booth is only available on the local computer.",
+        "This booth is only available on the local computer or through its network IP.",
         403,
       );
     }
@@ -799,14 +807,14 @@ export function assertLocalRequest(request: Request) {
       browserURL.port !== url.port
     ) {
       throw new StudioError(
-        "This booth is only available on the local computer.",
+        "This booth is only available on the local computer or through its network IP.",
         403,
       );
     }
   }
-  if (!local(url.hostname) || !local(browserURL.hostname))
+  if ((!local(url.hostname) && url.hostname !== "0.0.0.0") || !local(browserURL.hostname))
     throw new StudioError(
-      "This booth is only available on the local computer.",
+      "This booth is only available on the local computer or through its network IP.",
       403,
     );
   const origin = request.headers.get("origin");

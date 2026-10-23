@@ -1,0 +1,3 @@
+#!/bin/sh
+# Includes fast-forward pulls. A failed merge never runs this hook.
+exec /bin/sh "$(git rev-parse --show-toplevel)/scripts/post-pull.sh"
