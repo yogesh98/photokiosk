@@ -3,7 +3,26 @@ import { test } from "node:test";
 import { saveCameraSetup } from "./camera-setup";
 import { DEFAULT_SETTINGS } from "./kiosk-types";
 
-const canon = { ...DEFAULT_SETTINGS.camera, mode: "canon" as const };
+const canon = { ...DEFAULT_SETTINGS.camera, mode: "canon" as const, exposureMode: "manual" as const };
+
+test("automatic Canon exposure saves without probing USB or applying fixed values", async () => {
+  const automatic = { ...canon, exposureMode: "auto" as const };
+  const saved = await saveCameraSetup(automatic, {
+    getStatus: async () => {
+      assert.fail("Automatic exposure must not probe the camera while saving preferences");
+    },
+    configure: async () => {
+      assert.fail("Automatic exposure must leave ISO, aperture, and shutter speed to the camera");
+    },
+    save: async (preferences, message) => {
+      assert.deepEqual(preferences, automatic);
+      assert.match(message, /P and ISO Auto/);
+      assert.doesNotMatch(message, /settings applied/);
+      return true;
+    },
+  });
+  assert.equal(saved, true);
+});
 
 test("camera exposure is applied before persistence can remount the settings form", async () => {
   const events: string[] = [];

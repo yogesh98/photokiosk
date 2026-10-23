@@ -1,6 +1,7 @@
 import { DEFAULT_AI_ACCELERATION, DEFAULT_AI_MODEL, type AiAcceleration, type AiModelId } from "./ai-models";
 
 export type CameraMode = "browser" | "canon";
+export type CameraExposureMode = "auto" | "manual";
 export type BackgroundMode = "green-screen" | "ai" | "off";
 export type BackgroundSequenceMode = "single" | "rotate" | "custom";
 export interface BackgroundSequence {
@@ -25,6 +26,7 @@ export interface KioskSettings {
   backgroundReference: BackgroundReference | null;
   camera: {
     mode: CameraMode;
+    exposureMode: CameraExposureMode;
     deviceId: string;
     iso: string;
     aperture: string;
@@ -95,6 +97,7 @@ export const DEFAULT_SETTINGS: KioskSettings = {
   backgroundReference: null,
   camera: {
     mode: "browser",
+    exposureMode: "auto",
     deviceId: "",
     iso: "400",
     aperture: "5.6",

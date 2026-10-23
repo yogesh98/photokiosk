@@ -41,7 +41,7 @@ export type GphotoRunner = (
 const INSTALL_HELP =
   "Install gphoto2 on the computer running this app (macOS: brew install gphoto2; Ubuntu/Debian: sudo apt install gphoto2), then restart the app. You can also set GPHOTO2_PATH to its executable.";
 const CONNECT_HELP =
-  "Connect the camera to this computer with a USB data cable and turn it on. Close EOS Utility, Photos, Image Capture, and any other camera app. Use still-photo mode, JPEG or RAW+JPEG quality, and Manual exposure for ISO, aperture, and shutter control.";
+  "Connect the camera to this computer with a USB data cable and turn it on. Close EOS Utility, Photos, Image Capture, and any other camera app. Use still-photo mode and JPEG or RAW+JPEG quality. For automatic exposure, set the camera to P with ISO Auto; use M when applying manual exposure settings from the app.";
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
 const MAX_JPEG_BYTES = 50 * 1024 * 1024;
 

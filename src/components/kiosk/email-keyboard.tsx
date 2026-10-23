@@ -6,7 +6,7 @@ const ROWS = ["1234567890", "qwertyuiop", "asdfghjkl-", "zxcvbnm_."];
 const DOMAINS = ["@gmail.com", "@yahoo.com", "@icloud.com", "@outlook.com"];
 const MAX_LENGTH = 254;
 
-/** Touch keyboard for the kiosk screen. It only edits the address; the form still sends it. */
+/** Edits the address directly without emitting hardware keyboard shortcut events. */
 export function EmailKeyboard({
   value,
   onChange,
@@ -21,7 +21,13 @@ export function EmailKeyboard({
     onChange((value.split("@")[0] + domain).slice(0, MAX_LENGTH));
 
   return (
-    <div className="kiosk-keyboard" role="group" aria-label="On-screen keyboard">
+    <div
+      className="kiosk-keyboard"
+      role="group"
+      aria-label="On-screen email keyboard"
+      data-ip-shortcut-ignore
+      onPointerDown={(event) => event.preventDefault()}
+    >
       <div className="kiosk-keyboard-domains">
         {DOMAINS.map((domain) => (
           <button
