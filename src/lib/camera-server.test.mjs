@@ -111,6 +111,47 @@ test("high-resolution capture preserves camera files, returns JPEG, and removes 
   await assert.rejects(access(directories[0]), { code: "ENOENT" });
 });
 
+test("still capture autofocuses with the wide live-view AF method before the shutter", async () => {
+  const { controller, calls } = fakeCamera();
+  await controller.capture();
+  const { args } = calls.find(({ args }) => args.includes("--capture-image-and-download"));
+  const viewfinder = args.indexOf("viewfinder=1");
+  const afMethod = args.indexOf("afmethod=LiveMulti");
+  assert.equal(args[viewfinder - 1], "--set-config-value");
+  assert.equal(args[afMethod - 1], "--set-config-value");
+  assert.ok(viewfinder < afMethod && afMethod < args.indexOf("--capture-image-and-download"));
+  await controller.preview();
+  const preview = calls.find(({ args }) => args.includes("--capture-preview"));
+  assert.ok(!preview.args.includes("afmethod=LiveMulti"), "snapshots never move the lens");
+});
+
+test("a camera that rejects wide autofocus setup still takes one photo and skips it afterwards", async () => {
+  const captures = [];
+  const controller = new CameraController(async (args, options) => {
+    if (args.includes("--auto-detect")) return { stdout: detection, stderr: "" };
+    captures.push(args);
+    if (args.includes("afmethod=LiveMulti")) {
+      return failWithDiagnostics("", "*** Error ***\nChoice LiveMulti not found within list of choices.\n*** Error (-2: 'Bad parameters') ***\n", options);
+    }
+    await writeFile(args[args.indexOf("--filename") + 1].replace("%n", "1").replace("%C", "JPG"), jpeg);
+    return { stdout: "", stderr: "" };
+  });
+  assert.deepEqual(await controller.capture(), jpeg);
+  assert.deepEqual(await controller.capture(), jpeg);
+  assert.deepEqual(captures.map((args) => args.includes("afmethod=LiveMulti")), [true, false, false]);
+});
+
+test("a failed shutter after autofocus setup is never retried", async () => {
+  let shutters = 0;
+  const controller = new CameraController(async (args, options) => {
+    if (args.includes("--auto-detect")) return { stdout: detection, stderr: "" };
+    shutters++;
+    return failWithDiagnostics("", "*** Error ***\nCanon EOS Capture failed to release: Perhaps no focus?\n", options);
+  });
+  await assert.rejects(controller.capture(), { code: "camera_command" });
+  assert.equal(shutters, 1);
+});
+
 test("preview requests share one operation and do not fire the shutter", async () => {
   const { controller, calls } = fakeCamera();
   const [first, second] = await Promise.all([controller.preview(), controller.preview()]);

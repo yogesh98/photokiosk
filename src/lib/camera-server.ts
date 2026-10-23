@@ -44,6 +44,23 @@ const CONNECT_HELP =
   "Connect the camera to this computer with a USB data cable and turn it on. Close EOS Utility, Photos, Image Capture, and any other camera app. Use still-photo mode and JPEG or RAW+JPEG quality. For automatic exposure, set the camera to P with ISO Auto; use M when applying manual exposure settings from the app.";
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
 const MAX_JPEG_BYTES = 50 * 1024 * 1024;
+// The shutter's half-press autofocuses. In live view it uses the wide-area
+// FlexiZone - Multi method; viewfinder AF points cannot be changed over USB.
+const WIDE_AUTOFOCUS_ARGS = [
+  "--set-config-value",
+  "viewfinder=1",
+  "--set-config-value",
+  "afmethod=LiveMulti",
+] as const;
+
+/** gphoto2 stops at the first failed action, so these failures precede the shutter. */
+function rejectedAutofocusSetup(error: unknown): boolean {
+  const failure = recognizedCameraError(error);
+  return (
+    failure?.code === "camera_command" &&
+    /\b(?:viewfinder|afmethod|LiveMulti)\b/i.test(failure.details ?? "")
+  );
+}
 
 function cancelledCameraRequest(): CameraError {
   return new CameraError(
@@ -263,6 +280,7 @@ export class CameraController {
   private lastLive: { id: string; failure: CameraError | null } | null = null;
   private recoveryCamera: DetectedCamera | null = null;
   private lastUsbResetAt: number | null = null;
+  private autofocusRejected = new Set<string>();
 
   constructor(private readonly run: GphotoRunner = runGphoto, private readonly liveOptions: CameraLiveOptions = {}) {}
 
@@ -550,9 +568,8 @@ export class CameraController {
     const camera = this.selected ?? (await this.detect(signal));
     assertCameraRequestActive(signal);
     const directory = await mkdtemp(path.join(tmpdir(), "photokiosk-camera-"));
-    try {
-      assertCameraRequestActive(signal);
-      await this.run(
+    const runCapture = (autofocus: boolean) =>
+      this.run(
         [
           ...this.cameraArgs(camera),
           "--filename",
@@ -560,10 +577,27 @@ export class CameraController {
           "--force-overwrite",
           ...(preview
             ? ["--capture-preview"]
-            : ["--keep", "--capture-image-and-download"]),
+            : [
+                ...(autofocus ? WIDE_AUTOFOCUS_ARGS : []),
+                "--keep",
+                "--capture-image-and-download",
+              ]),
         ],
         { timeoutMs: preview ? 15_000 : 60_000, cwd: directory, signal },
       );
+    try {
+      assertCameraRequestActive(signal);
+      const autofocus = !preview && !this.autofocusRejected.has(camera.model);
+      try {
+        await runCapture(autofocus);
+      } catch (error) {
+        if (!autofocus || !rejectedAutofocusSetup(error)) throw error;
+        // The shutter has not fired. Shoot with the camera's own AF settings
+        // and skip the rejected live-view setup for later photos.
+        this.autofocusRejected.add(camera.model);
+        assertCameraRequestActive(signal);
+        await runCapture(false);
+      }
       assertCameraRequestActive(signal);
       const filename = preview
         ? "preview.jpg"
