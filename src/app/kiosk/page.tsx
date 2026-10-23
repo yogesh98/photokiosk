@@ -32,6 +32,7 @@ import {
 } from "@/components/kiosk/live-preview";
 import { PhotoSharing } from "@/components/kiosk/photo-sharing";
 import { EmailKeyboard } from "@/components/kiosk/email-keyboard";
+import { LocalIpOverlay } from "@/components/kiosk/local-ip-overlay";
 import {
   runCaptureSequence,
   waitForCaptureScene,
@@ -89,6 +90,7 @@ export default function KioskPage() {
   const [resetIn, setResetIn] = useState(20);
   // Screen-only state: whether the touch keyboard sheet for email is showing.
   const [emailOpen, setEmailOpen] = useState(false);
+  const emailInputRef = useRef<HTMLInputElement>(null);
   const captureRef = useRef<CaptureReadiness>({ capture: null });
   const cameraErrorRef = useRef<string | null>(null);
   const sessionBackgroundNamesRef = useRef<[string, string, string]>(["Original background", "Original background", "Original background"]);
@@ -386,6 +388,11 @@ export default function KioskPage() {
   const canEmail = Boolean(studio?.settings.gmail.configured);
   const showEmailSheet =
     emailOpen && canEmail && (stage === "review" || stage === "sending");
+
+  useEffect(() => {
+    if (showEmailSheet) emailInputRef.current?.focus();
+  }, [showEmailSheet]);
+
   const capturePrompt = preparingPhoto
     ? "Getting your next background ready…"
     : countdown === 0
@@ -398,6 +405,7 @@ export default function KioskPage() {
 
   return (
     <main className={`kiosk-shell is-${stage}`}>
+      <LocalIpOverlay />
       {studio && stage !== "idle" && (
         <header className="kiosk-header">
           <div className="kiosk-brand">
@@ -801,6 +809,7 @@ export default function KioskPage() {
       {showEmailSheet && (
         <div
           className="kiosk-email-sheet"
+          data-ip-shortcut-ignore
           role="dialog"
           aria-modal="true"
           aria-labelledby="kiosk-email-title"
@@ -811,10 +820,14 @@ export default function KioskPage() {
               We’ll send all three photos here.
             </label>
             <input
+              ref={emailInputRef}
               id="guest-email"
               type="email"
               name="email"
               autoComplete="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
               inputMode="none"
               placeholder="name@example.com"
               required

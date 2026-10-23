@@ -33,6 +33,8 @@ Dev and production bind to `127.0.0.1`. Open the kiosk in a second browser windo
 
 The admin refreshes on focus and the gallery has a refresh button. The kiosk picks up saved settings between guests, polling every 15 seconds while idle. A reset waits for fresh settings before enabling another session. Start a fresh session to apply changes made during capture.
 
+Hold **I + P** together on a physical keyboard for about a second to show the booth computer's local IPv4 addresses. Release either key to hide them. The shortcut stays inactive during email entry. The email screen has a touch keyboard with **@gmail.com** and **@yahoo.com** shortcuts.
+
 The kiosk displays each photo's scene before starting its countdown and uses that scene in the saved photo. The camera and AI model stay loaded while backgrounds switch. The plan is fixed for the guest's session, and the gallery keeps the background name for each photo. Sequences work with both green screen and AI; Off preserves the original camera scene for all three shots.
 
 ## Local AI background replacement

@@ -77,6 +77,59 @@
   white-space: nowrap;
 }
 
+/* ---------- Physical keyboard network shortcut ---------- */
+
+.kiosk-ip-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(12, 20, 38, 0.78);
+  pointer-events: none;
+}
+.kiosk-ip-card {
+  width: min(100%, 720px);
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+  padding: clamp(24px, 4vw, 48px);
+  border: 4px solid var(--k-white);
+  border-radius: 32px;
+  background: var(--k-blue-deep);
+  box-shadow: 0 20px 64px rgba(0, 0, 0, 0.35);
+  text-align: center;
+}
+.kiosk-ip-card h2 {
+  margin: 0 0 24px;
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 800;
+}
+.kiosk-ip-card p {
+  margin: 0;
+}
+.kiosk-ip-addresses {
+  display: grid;
+  gap: 24px;
+  margin: 0;
+}
+.kiosk-ip-addresses dt {
+  color: var(--k-soft);
+  font-size: 20px;
+}
+.kiosk-ip-addresses dd {
+  margin: 4px 0 0;
+  font-family: monospace;
+  font-size: clamp(28px, 5vw, 54px);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+.kiosk-ip-card .kiosk-ip-hint {
+  margin-top: 28px;
+  color: var(--k-soft);
+  font-size: 20px;
+}
+
 /* ---------- Header ---------- */
 
 .kiosk-header {
