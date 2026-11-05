@@ -1,10 +1,12 @@
 /*
- * Kiosk screen: Kids' Diwali Celebration photo booth.
+ * Kiosk screen: Diwali 2026, Light Beyond Lamps.
  * Designed for a 1080 x 1920 portrait touch screen; narrower or landscape
  * windows get the same single column, scaled down.
  *
- * Palette: Royal Blue #4A78E0, Soft White #F4F6FA, Steel Gray #5A6473,
- * plus a deeper royal (#2F55B0) for button depth and the sign rim.
+ * Black, gold and a little magic, after the Atma Mirror exhibit: gold shimmer
+ * on the headings (Dehanna), a breathing halo around the camera, gold-rimmed
+ * buttons that glow, drifting mist and a vignette. The sparks and flames are
+ * drawn by components/kiosk/magic-fx.ts on the .kiosk-fx canvases.
  */
 
 .kiosk-fonts {
@@ -12,15 +14,22 @@
 }
 
 .kiosk-shell {
-  --k-blue: #4a78e0;
-  --k-blue-deep: #2f55b0;
-  --k-white: #f4f6fa;
-  --k-steel: #5a6473;
-  --k-soft: rgba(244, 246, 250, 0.92);
-  --k-line: rgba(244, 246, 250, 0.72);
-  --k-glass: rgba(255, 255, 255, 0.13);
-  --k-shadow: rgba(28, 38, 62, 0.35);
-  --k-display: var(--kiosk-font-display), "Arial Rounded MT Bold", system-ui, sans-serif;
+  --k-ink: #07060a;
+  --k-gold: #e8c879;
+  --k-gold-hi: #fff1c4;
+  --k-gold-deep: #b8892e;
+  --k-bronze: #6d4e17;
+  --k-text: #f1e4c2;
+  --k-soft: rgba(241, 228, 194, 0.82);
+  --k-muted: rgba(241, 228, 194, 0.62);
+  --k-line: rgba(232, 200, 121, 0.42);
+  --k-glass: rgba(232, 200, 121, 0.1);
+  --k-shadow: rgba(0, 0, 0, 0.6);
+  --k-panel: linear-gradient(180deg, #1c150a 0%, #0a0703 100%);
+  --k-mirror: radial-gradient(ellipse at 50% 38%, #1c1628 0%, #0c0a12 60%, #050407 100%);
+  --k-metal: linear-gradient(135deg, #b5862c 0%, #f6e3a4 22%, #c99a3e 42%, #fff2c6 56%, #b98a2e 74%, #f0d488 90%, #a87a25 100%);
+  --k-shimmer: linear-gradient(100deg, #8a6420 0%, #f7e7b4 18%, #c9a04a 36%, #fff3cf 50%, #b8892e 64%, #f2d98f 82%, #8a6420 100%);
+  --k-display: var(--kiosk-font-display), "Didot", "Bodoni 72", Georgia, serif;
   --k-body: var(--kiosk-font-body), system-ui, -apple-system, "Segoe UI", sans-serif;
   --k-column: min(100%, 936px);
   --k-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
@@ -33,11 +42,60 @@
   flex-direction: column;
   align-items: center;
   overflow-x: hidden;
-  background: var(--k-blue);
-  color: var(--k-white);
+  background: radial-gradient(ellipse 120% 80% at 50% 32%, #1c1628 0%, #0c0a12 52%, #020203 100%) fixed var(--k-ink);
+  color: var(--k-text);
   font-family: var(--k-body);
   font-size: clamp(20px, 2.6vw, 28px);
   -webkit-tap-highlight-color: transparent;
+  /* A finger dragged across the screen leaves sparkles, not a text selection. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+.kiosk-shell input {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Mist drifting through the dark, and a vignette at the edges. */
+.kiosk-shell::before,
+.kiosk-shell::after {
+  content: "";
+  position: fixed;
+  z-index: 0;
+  pointer-events: none;
+}
+.kiosk-shell::before {
+  inset: -30%;
+  opacity: 0.6;
+  background:
+    radial-gradient(circle at 30% 40%, rgba(120, 90, 170, 0.18), transparent 35%),
+    radial-gradient(circle at 70% 65%, rgba(200, 150, 80, 0.13), transparent 38%),
+    radial-gradient(circle at 50% 20%, rgba(90, 110, 170, 0.12), transparent 30%);
+  animation: kiosk-mist 18s ease-in-out infinite alternate;
+}
+.kiosk-shell::after {
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 45%, transparent 58%, rgba(0, 0, 0, 0.8) 100%);
+}
+
+/* The booth sits between the back light (motes, far side of the flames) and the front light. */
+:where(.kiosk-shell > :not(.kiosk-fx)) {
+  position: relative;
+  z-index: 1;
+}
+.kiosk-fx {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.kiosk-fx-back {
+  z-index: 0;
+}
+.kiosk-fx-front {
+  z-index: 50;
 }
 
 /* Zero-specificity resets, so component classes below always win. */
@@ -50,6 +108,7 @@
   cursor: pointer;
   transition:
     background-color 0.2s,
+    border-color 0.2s,
     color 0.2s,
     transform 0.12s,
     box-shadow 0.12s,
@@ -57,12 +116,12 @@
 }
 .kiosk-shell button:disabled {
   cursor: not-allowed;
-  opacity: 0.5;
+  opacity: 0.45;
 }
 .kiosk-shell button:focus-visible,
 .kiosk-shell a:focus-visible,
 .kiosk-shell input:focus-visible {
-  outline: 5px solid var(--k-white);
+  outline: 5px solid var(--k-gold-hi);
   outline-offset: 6px;
 }
 .kiosk-shell img {
@@ -77,6 +136,35 @@
   white-space: nowrap;
 }
 
+/* ---------- Logo ---------- */
+
+.kiosk-logo {
+  display: block;
+}
+.kiosk-logo svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+  filter: drop-shadow(0 0 18px rgba(255, 200, 100, 0.22));
+}
+.kiosk-logo .dl-flame {
+  transform-box: view-box;
+  transform-origin: 373px 232px;
+  animation: kiosk-flicker 2.4s ease-in-out infinite;
+}
+.kiosk-logo .dl-glow {
+  transform-box: view-box;
+  transform-origin: 373px 200px;
+  animation: kiosk-glow 2.4s ease-in-out infinite;
+}
+.kiosk-logo .dl-rays {
+  animation: kiosk-rays 3.2s ease-in-out infinite;
+}
+.kiosk-logo .dl-sheen {
+  animation: kiosk-sheen 7s ease-in-out 1s infinite;
+}
+
 /* ---------- Physical keyboard network shortcut ---------- */
 
 .kiosk-ip-overlay {
@@ -86,7 +174,7 @@
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(12, 20, 38, 0.78);
+  background: rgba(0, 0, 0, 0.78);
   pointer-events: none;
 }
 .kiosk-ip-card {
@@ -94,16 +182,18 @@
   max-height: calc(100dvh - 48px);
   overflow-y: auto;
   padding: clamp(24px, 4vw, 48px);
-  border: 4px solid var(--k-white);
+  border: 2px solid var(--k-line);
   border-radius: 32px;
-  background: var(--k-blue-deep);
-  box-shadow: 0 20px 64px rgba(0, 0, 0, 0.35);
+  background: var(--k-panel);
+  box-shadow: 0 20px 64px rgba(0, 0, 0, 0.6);
+  color: var(--k-text);
   text-align: center;
 }
 .kiosk-ip-card h2 {
   margin: 0 0 24px;
   font-size: clamp(28px, 4vw, 44px);
   font-weight: 800;
+  color: var(--k-gold);
 }
 .kiosk-ip-card p {
   margin: 0;
@@ -114,7 +204,7 @@
   margin: 0;
 }
 .kiosk-ip-addresses dt {
-  color: var(--k-soft);
+  color: var(--k-muted);
   font-size: 20px;
 }
 .kiosk-ip-addresses dd {
@@ -122,11 +212,12 @@
   font-family: monospace;
   font-size: clamp(28px, 5vw, 54px);
   font-weight: 700;
+  color: var(--k-gold-hi);
   overflow-wrap: anywhere;
 }
 .kiosk-ip-card .kiosk-ip-hint {
   margin-top: 28px;
-  color: var(--k-soft);
+  color: var(--k-muted);
   font-size: 20px;
 }
 
@@ -144,39 +235,9 @@
 }
 .kiosk-brand {
   flex: none;
-  padding: 6px 14px;
-  border-radius: 20px;
-  background: var(--k-white);
-  box-shadow: 0 8px 0 var(--k-blue-deep);
+  height: clamp(64px, 8.4vw, 92px);
+  aspect-ratio: 490 / 334;
   animation: kiosk-pop-in 0.5s var(--k-spring) both;
-}
-.kiosk-brand img {
-  width: auto;
-  height: clamp(44px, 6.3vw, 68px);
-}
-.kiosk-event {
-  flex: 1;
-  min-width: 0;
-  margin: 0;
-  font-size: clamp(20px, 2.6vw, 28px);
-  font-weight: 700;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.kiosk-icon-button {
-  flex: none;
-  width: clamp(56px, 6.7vw, 72px);
-  height: clamp(56px, 6.7vw, 72px);
-  margin-left: auto;
-  display: grid;
-  place-items: center;
-  border: 3px solid var(--k-line);
-  border-radius: 50%;
-  background: transparent;
-}
-.kiosk-icon-button:active {
-  background: var(--k-glass);
 }
 
 /* ---------- Heading and marquee sign ---------- */
@@ -192,14 +253,31 @@
   justify-content: center;
   text-align: center;
 }
+/* Gold shimmer, as on Atma Mirror's titles. */
+.kiosk-heading > h1,
+.kiosk-sign-panel h1,
+.kiosk-email-form h2,
+.kiosk-success h1,
+.kiosk-loading h1,
+.kiosk-count-number,
+.kiosk-start-label {
+  background: var(--k-shimmer);
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
 .kiosk-heading > h1 {
   margin: 0;
   font-family: var(--k-display);
   font-weight: 400;
-  font-size: clamp(56px, 10vw, 108px);
+  font-size: clamp(60px, 10.6vw, 116px);
   line-height: 1.05;
-  color: #ffffff;
-  animation: kiosk-rise 0.55s var(--k-ease) both;
+  filter: drop-shadow(0 0 12px rgba(255, 200, 100, 0.28));
+  animation:
+    kiosk-rise 0.55s var(--k-ease) both,
+    kiosk-shimmer 7s linear infinite;
 }
 .kiosk-heading > p {
   margin: 14px 0 0;
@@ -222,33 +300,50 @@
   box-sizing: border-box;
   padding: 30px;
   border-radius: 52px;
-  background: var(--k-blue-deep);
+  background: var(--k-panel);
   box-shadow:
-    0 0 90px rgba(244, 246, 250, 0.28),
+    0 0 0 2px rgba(232, 200, 121, 0.55),
+    0 0 90px rgba(255, 190, 90, 0.2),
     0 26px 50px var(--k-shadow);
   animation: kiosk-pop-in 0.7s var(--k-spring) both;
 }
+/* A ring of diya lights, chasing round the sign. */
 .kiosk-bulb {
   position: absolute;
-  width: 18px;
-  height: 18px;
-  margin: -9px 0 0 -9px;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
   border-radius: 50%;
-  background: #7f9bd8;
+  background: var(--k-bronze);
   animation: kiosk-chase 1.2s linear infinite;
 }
 .kiosk-sign-panel {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
   display: flex;
   align-items: center;
   justify-content: center;
   gap: clamp(16px, 2.6vw, 30px);
-  padding: clamp(14px, 2vw, 22px) clamp(18px, 3vw, 34px);
+  padding: clamp(18px, 2.6vw, 28px) clamp(18px, 3vw, 34px);
   border-radius: 30px;
-  background: var(--k-white);
+  background: var(--k-mirror);
+  box-shadow:
+    inset 0 0 0 1.5px rgba(232, 200, 121, 0.5),
+    inset 0 0 40px rgba(0, 0, 0, 0.9);
 }
-.kiosk-sign-panel img {
-  width: min(52%, 440px);
-  height: auto;
+/* A soft reflection sweeping across the glass. */
+.kiosk-sign-panel::after {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(115deg, transparent 38%, rgba(255, 255, 255, 0.06) 46%, transparent 54%);
+  animation: kiosk-glass 9s ease-in-out infinite;
+}
+.kiosk-sign-panel .kiosk-logo {
+  width: min(58%, 480px);
 }
 .kiosk-sign-panel h1 {
   margin: 0;
@@ -256,10 +351,11 @@
   flex-direction: column;
   font-family: var(--k-display);
   font-weight: 400;
-  font-size: clamp(48px, 9vw, 98px);
-  line-height: 0.98;
+  font-size: clamp(56px, 10vw, 112px);
+  line-height: 1;
   text-align: left;
-  color: var(--k-blue);
+  filter: drop-shadow(0 0 14px rgba(255, 200, 100, 0.3));
+  animation: kiosk-shimmer 7s linear infinite;
 }
 
 /* ---------- Camera preview ---------- */
@@ -276,7 +372,32 @@
   margin-top: auto;
 }
 .kiosk-camera-area {
+  position: relative;
   min-width: 0;
+}
+/* The warm "LED strip" halo around the camera: breathing while idle, bright during capture. */
+.kiosk-camera-area::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  border-radius: 24px;
+  pointer-events: none;
+  box-shadow:
+    0 0 26px 6px rgba(255, 196, 110, 0.55),
+    0 0 80px 24px rgba(255, 170, 70, 0.22);
+  opacity: 0.4;
+  animation: kiosk-breathe 3.2s ease-in-out infinite;
+}
+.kiosk-shell.is-capturing .kiosk-camera-area::before {
+  opacity: 1;
+  animation: none;
+}
+.kiosk-experience.is-reviewing .kiosk-camera-area::before {
+  opacity: 0.6;
+  animation: none;
 }
 .kiosk-preview-frame {
   /* 3:2 matches the saved photo, so guests see exactly what will be captured. */
@@ -286,68 +407,55 @@
   aspect-ratio: 3 / 2;
   border-radius: 24px;
   overflow: hidden;
-  background: var(--k-steel);
-  outline: 9px dotted var(--k-white);
-  outline-offset: 10px;
-  box-shadow: 0 0 70px rgba(244, 246, 250, 0.2);
+  background: #0c0a12;
+  outline: 7px dotted rgba(255, 228, 160, 0.72);
+  outline-offset: 12px;
 }
-.kiosk-live-badge,
-.kiosk-scene-label {
+/* A gilded rim just inside the edge (drawn over the preview only, never on the photo). */
+.kiosk-preview-frame::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 7;
+  padding: 5px;
+  border-radius: inherit;
+  pointer-events: none;
+  background: var(--k-metal);
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+}
+.kiosk-live-badge {
   position: absolute;
   z-index: 3;
+  top: 22px;
+  left: 22px;
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 10px 22px;
+  border: 1px solid var(--k-line);
   border-radius: 999px;
-  background: rgba(28, 38, 62, 0.72);
-  color: #ffffff;
+  background: rgba(7, 6, 10, 0.72);
+  color: var(--k-gold-hi);
   font-size: clamp(18px, 2.2vw, 24px);
   font-weight: 700;
-}
-.kiosk-live-badge {
-  top: 20px;
-  left: 20px;
+  letter-spacing: 0.04em;
 }
 .kiosk-live-badge > span {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: rgba(244, 246, 250, 0.45);
+  background: rgba(232, 200, 121, 0.35);
 }
 .kiosk-live-badge > span.is-ready {
-  background: #ffffff;
+  background: var(--k-gold-hi);
+  box-shadow: 0 0 12px 3px rgba(255, 210, 120, 0.8);
   animation: kiosk-blink 1.4s ease-in-out infinite;
-}
-.kiosk-scene-label {
-  bottom: 20px;
-  left: 20px;
-  max-width: calc(100% - 40px);
-}
-.kiosk-camera-caption {
-  margin-top: 30px;
-  display: flex;
-  justify-content: space-between;
-  gap: 20px;
-  font-size: clamp(18px, 2.2vw, 24px);
-  font-weight: 600;
-  color: var(--k-soft);
-}
-.kiosk-camera-caption > span {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.kiosk-small-dot {
-  width: 14px;
-  height: 14px;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 0 0 5px rgba(255, 255, 255, 0.22);
-}
-.kiosk-small-dot.is-muted {
-  background: rgba(244, 246, 250, 0.4);
-  box-shadow: none;
 }
 
 /* ---------- Countdown, flash, saving ---------- */
@@ -358,7 +466,7 @@
   z-index: 4;
   display: grid;
   place-items: center;
-  background: rgba(28, 38, 62, 0.16);
+  background: radial-gradient(ellipse at 50% 50%, rgba(5, 4, 8, 0.32), rgba(5, 4, 8, 0.12) 70%);
   pointer-events: none;
 }
 .kiosk-countdown-overlay > strong {
@@ -366,21 +474,25 @@
   place-items: center;
   font-family: var(--k-display);
   font-weight: 400;
-  font-size: clamp(220px, 36vw, 400px);
+  font-size: clamp(240px, 40vw, 440px);
   line-height: 1;
-  color: #ffffff;
-  text-shadow: 0 14px 0 var(--k-blue);
+  color: var(--k-gold-hi);
   animation: kiosk-count 1s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
 }
+.kiosk-count-number {
+  padding: 0 0.08em;
+  filter: drop-shadow(0 8px 0 rgba(0, 0, 0, 0.45)) drop-shadow(0 0 30px rgba(255, 190, 90, 0.65));
+  animation: kiosk-shimmer 3s linear infinite;
+}
 .kiosk-countdown-overlay > strong > svg {
-  filter: drop-shadow(0 10px 0 var(--k-blue));
+  filter: drop-shadow(0 6px 0 rgba(0, 0, 0, 0.45)) drop-shadow(0 0 24px rgba(255, 190, 90, 0.7));
 }
 .kiosk-flash {
   /* Fixed so the flash fills the whole screen, like a real booth. */
   position: fixed;
   inset: 0;
   z-index: 60;
-  background: #ffffff;
+  background: #fffaf0;
   pointer-events: none;
   animation: kiosk-flash 0.45s ease-out forwards;
 }
@@ -393,7 +505,8 @@
   align-items: center;
   justify-content: center;
   gap: 20px;
-  background: rgba(47, 85, 176, 0.84);
+  background: rgba(7, 6, 10, 0.82);
+  color: var(--k-gold-hi);
   font-size: clamp(26px, 3.4vw, 36px);
   font-weight: 700;
   animation: kiosk-fade 0.3s ease-out both;
@@ -415,25 +528,31 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
-  border: 4px dashed rgba(244, 246, 250, 0.6);
+  border: 3px dashed rgba(232, 200, 121, 0.5);
   border-radius: 20px;
-  color: var(--k-soft);
+  background: rgba(12, 10, 18, 0.55);
+  color: var(--k-muted);
   font-size: clamp(18px, 2.2vw, 24px);
   font-weight: 700;
+  letter-spacing: 0.04em;
 }
 .kiosk-slot-number {
   font-family: var(--k-display);
-  font-size: clamp(36px, 4.8vw, 52px);
+  font-size: clamp(40px, 5.4vw, 58px);
+  font-weight: 400;
   line-height: 1;
-  color: #ffffff;
+  color: var(--k-gold);
 }
 .kiosk-slot.is-next {
-  border: 5px solid #ffffff;
-  background: rgba(255, 255, 255, 0.16);
-  animation: kiosk-glow 1.1s ease-out infinite;
+  border: 4px solid var(--k-gold-hi);
+  background: rgba(232, 200, 121, 0.12);
+  color: var(--k-gold-hi);
+  animation: kiosk-pulse-ring 1.1s ease-out infinite;
 }
 .kiosk-slot.is-filled {
   border: 0;
+  background: none;
+  box-shadow: 0 0 0 3px rgba(232, 200, 121, 0.7), 0 0 26px rgba(255, 190, 90, 0.35);
 }
 .kiosk-slot.is-filled img {
   width: 100%;
@@ -453,9 +572,10 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  border: 5px solid var(--k-blue);
-  background: var(--k-white);
-  color: var(--k-blue);
+  border: 4px solid var(--k-ink);
+  background: var(--k-metal);
+  color: #1a1206;
+  box-shadow: 0 0 18px rgba(255, 200, 100, 0.6);
   animation: kiosk-pop-in 0.45s var(--k-spring) 0.8s both;
 }
 
@@ -485,33 +605,58 @@
   font-weight: 800;
   text-decoration: none;
 }
+/* Atma Mirror's gold button: dark lacquer, a gold rim and a slow glow. */
 .kiosk-primary {
-  border: 0;
-  background: var(--k-white);
-  color: var(--k-blue);
+  border: 3px solid rgba(246, 220, 143, 0.9);
+  background: linear-gradient(180deg, #2b2111 0%, #120c04 100%);
+  color: var(--k-gold-hi);
   font-size: clamp(32px, 4.8vw, 52px);
-  box-shadow: 0 12px 0 var(--k-blue-deep);
+  letter-spacing: 0.02em;
+  box-shadow:
+    0 0 26px rgba(246, 200, 100, 0.28),
+    inset 0 0 22px rgba(246, 200, 100, 0.15);
+}
+.kiosk-primary:not(:disabled) {
+  animation: kiosk-btnglow 2.6s ease-in-out infinite;
 }
 .kiosk-shell .kiosk-primary:active:not(:disabled) {
-  transform: translateY(8px);
-  box-shadow: 0 4px 0 var(--k-blue-deep);
+  transform: scale(0.96);
+  border-color: var(--k-gold-hi);
 }
 .kiosk-secondary {
-  border: 4px solid var(--k-line);
-  background: transparent;
-  color: var(--k-white);
+  border: 3px solid var(--k-line);
+  background: rgba(7, 6, 10, 0.4);
+  color: var(--k-text);
   font-size: clamp(26px, 3.6vw, 40px);
   font-weight: 700;
 }
 .kiosk-secondary:active:not(:disabled) {
   background: var(--k-glass);
+  border-color: rgba(246, 220, 143, 0.8);
+  transform: scale(0.97);
 }
 .kiosk-start-button {
+  position: relative;
   min-height: clamp(120px, 17vw, 184px);
   font-size: clamp(44px, 6vw, 66px);
+}
+.kiosk-start-button > svg {
+  color: var(--k-gold-hi);
+  filter: drop-shadow(0 0 10px rgba(255, 210, 120, 0.7));
+}
+.kiosk-start-label {
+  animation: kiosk-shimmer 5s linear infinite;
+}
+/* A ring of light that keeps rippling out from the start button. */
+.kiosk-start-button::after {
+  content: "";
+  position: absolute;
+  inset: -3px;
+  border-radius: inherit;
+  pointer-events: none;
   animation: kiosk-ring 2.4s ease-out infinite;
 }
-.kiosk-start-button:disabled {
+.kiosk-start-button:disabled::after {
   animation: none;
 }
 .kiosk-cancel {
@@ -541,9 +686,10 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: var(--k-white);
-  color: var(--k-blue);
+  background: var(--k-metal);
+  color: #1a1206;
   font-weight: 800;
+  box-shadow: 0 0 14px rgba(255, 200, 100, 0.35);
 }
 .kiosk-config-note,
 .kiosk-main-error,
@@ -560,7 +706,9 @@
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  background: var(--k-glass);
+  border: 1px solid var(--k-line);
+  background: rgba(12, 10, 18, 0.72);
+  color: var(--k-soft);
 }
 .kiosk-config-note .kiosk-secondary {
   min-height: 72px;
@@ -569,9 +717,10 @@
 }
 .kiosk-main-error,
 .kiosk-inline-error {
-  background: var(--k-white);
-  color: var(--k-steel);
-  border-left: 12px solid var(--k-blue-deep);
+  border: 1px solid rgba(255, 157, 92, 0.45);
+  border-left: 10px solid #ff9d5c;
+  background: rgba(20, 10, 6, 0.86);
+  color: var(--k-text);
 }
 
 /* ---------- Review: photo picker and sharing ---------- */
@@ -599,8 +748,8 @@
   border: 0;
   border-radius: 16px;
   overflow: hidden;
-  background: var(--k-steel);
-  outline: 6px solid transparent;
+  background: #0c0a12;
+  outline: 5px solid rgba(232, 200, 121, 0.25);
   outline-offset: 5px;
   animation: kiosk-drop 0.5s var(--k-spring) both;
 }
@@ -611,7 +760,8 @@
   animation-delay: 0.16s;
 }
 .kiosk-review-thumbnails > button.is-selected {
-  outline-color: #ffffff;
+  outline-color: var(--k-gold-hi);
+  box-shadow: 0 0 34px rgba(255, 200, 100, 0.55);
 }
 .kiosk-review-thumbnails img {
   width: 100%;
@@ -627,14 +777,14 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: rgba(28, 38, 62, 0.72);
-  color: #ffffff;
+  background: rgba(7, 6, 10, 0.78);
+  color: var(--k-gold-hi);
   font-size: 22px;
   font-weight: 800;
 }
 .kiosk-review-thumbnails > button.is-selected > span {
-  background: var(--k-white);
-  color: var(--k-blue);
+  background: var(--k-metal);
+  color: #1a1206;
 }
 .kiosk-share-panel {
   display: flex;
@@ -647,9 +797,12 @@
   gap: clamp(20px, 3vw, 34px);
   padding: clamp(18px, 2.6vw, 28px);
   border-radius: 32px;
-  background: #ffffff;
-  color: var(--k-steel);
-  box-shadow: 0 24px 50px var(--k-shadow);
+  background: var(--k-panel);
+  color: var(--k-soft);
+  box-shadow:
+    0 0 0 2px rgba(232, 200, 121, 0.55),
+    0 0 60px rgba(255, 190, 90, 0.16),
+    0 24px 50px var(--k-shadow);
   transform-origin: 50% 0;
   animation: kiosk-flip-in 0.7s var(--k-ease) both;
 }
@@ -658,10 +811,15 @@
   flex: none;
   width: clamp(200px, 26vw, 280px);
 }
+/* QR codes stay dark on light so every phone can read them. */
 .kiosk-share-qr {
   width: 100%;
   height: auto;
+  border-radius: 18px;
   image-rendering: pixelated;
+  box-shadow:
+    0 0 0 4px var(--k-gold),
+    0 0 30px rgba(255, 200, 100, 0.45);
 }
 .kiosk-share-scan {
   position: absolute;
@@ -670,8 +828,8 @@
   top: 6%;
   height: 6px;
   border-radius: 3px;
-  background: var(--k-blue);
-  box-shadow: 0 0 18px 5px rgba(74, 120, 224, 0.55);
+  background: var(--k-gold);
+  box-shadow: 0 0 18px 5px rgba(255, 190, 90, 0.6);
   animation: kiosk-scan 2.2s ease-in-out 0.8s infinite alternate both;
 }
 .kiosk-share-text {
@@ -679,10 +837,12 @@
 }
 .kiosk-share-card h3 {
   margin: 0;
-  font-size: clamp(32px, 4.4vw, 48px);
-  font-weight: 800;
-  line-height: 1.1;
-  color: var(--k-blue);
+  font-family: var(--k-display);
+  font-size: clamp(40px, 5.4vw, 58px);
+  font-weight: 400;
+  line-height: 1.05;
+  color: var(--k-gold-hi);
+  text-shadow: 0 0 22px rgba(255, 200, 100, 0.4);
 }
 .kiosk-share-card p {
   margin: 10px 0 0;
@@ -697,7 +857,7 @@
 }
 .kiosk-share-pending > svg {
   flex: none;
-  color: var(--k-blue);
+  color: var(--k-gold);
 }
 .kiosk-share-failed {
   flex-direction: column;
@@ -707,8 +867,6 @@
   margin: 0;
 }
 .kiosk-share-failed .kiosk-secondary {
-  border-color: var(--k-steel);
-  color: var(--k-steel);
   min-height: 88px;
 }
 .kiosk-share-note {
@@ -737,19 +895,21 @@
   gap: 12px;
   min-height: clamp(80px, 9.6vw, 104px);
   padding: 0 14px;
-  border: 4px solid var(--k-line);
+  border: 3px solid var(--k-line);
   border-radius: 999px;
-  background: transparent;
+  background: rgba(7, 6, 10, 0.4);
+  color: var(--k-text);
   font-size: clamp(22px, 3vw, 32px);
   font-weight: 700;
 }
 .kiosk-review-actions > button.is-done {
-  border-color: var(--k-white);
-  background: var(--k-white);
-  color: var(--k-blue);
+  border-color: rgba(246, 220, 143, 0.9);
+  background: linear-gradient(180deg, #2b2111 0%, #120c04 100%);
+  color: var(--k-gold-hi);
+  box-shadow: 0 0 22px rgba(246, 200, 100, 0.3), inset 0 0 18px rgba(246, 200, 100, 0.14);
 }
 .kiosk-review-actions > button:active:not(:disabled) {
-  transform: translateY(4px);
+  transform: scale(0.96);
 }
 
 /* ---------- Email sheet with touch keyboard ---------- */
@@ -760,7 +920,7 @@
   z-index: 40;
   overflow-y: auto;
   padding: clamp(28px, 5vw, 64px) clamp(18px, 6.7vw, 72px) clamp(28px, 6vw, 72px);
-  background: var(--k-blue);
+  background: radial-gradient(ellipse 120% 80% at 50% 30%, #1c1628 0%, #0c0a12 52%, #020203 100%) var(--k-ink);
   animation: kiosk-sheet-up 0.45s var(--k-ease) both;
 }
 .kiosk-email-form {
@@ -775,9 +935,10 @@
   margin: 0;
   font-family: var(--k-display);
   font-weight: 400;
-  font-size: clamp(56px, 9.3vw, 100px);
+  font-size: clamp(60px, 10vw, 108px);
   line-height: 1.05;
-  color: #ffffff;
+  filter: drop-shadow(0 0 12px rgba(255, 200, 100, 0.28));
+  animation: kiosk-shimmer 7s linear infinite;
 }
 .kiosk-email-form label {
   font-size: clamp(24px, 3.5vw, 38px);
@@ -789,18 +950,23 @@
   box-sizing: border-box;
   min-height: clamp(100px, 13.5vw, 146px);
   padding: 0 34px;
-  border: 6px solid var(--k-white);
+  border: 3px solid var(--k-line);
   border-radius: 32px;
-  background: #ffffff;
-  color: var(--k-blue-deep);
+  background: rgba(12, 10, 18, 0.85);
+  color: var(--k-gold-hi);
   font-size: clamp(32px, 4.6vw, 50px);
   font-weight: 700;
+  caret-color: var(--k-gold-hi);
+  box-shadow: inset 0 0 26px rgba(0, 0, 0, 0.7);
 }
 .kiosk-email-form input:valid:not(:placeholder-shown) {
-  border-color: var(--k-steel);
+  border-color: var(--k-gold-hi);
+  box-shadow:
+    inset 0 0 26px rgba(0, 0, 0, 0.7),
+    0 0 26px rgba(255, 200, 100, 0.35);
 }
 .kiosk-email-form input::placeholder {
-  color: #8a929e;
+  color: rgba(241, 228, 194, 0.38);
   font-weight: 600;
 }
 .kiosk-email-photos {
@@ -815,8 +981,8 @@
   aspect-ratio: 3 / 2;
   object-fit: cover;
   border-radius: 14px;
-  border: 5px solid var(--k-white);
-  box-shadow: 0 10px 24px var(--k-shadow);
+  border: 3px solid var(--k-gold);
+  box-shadow: 0 0 24px rgba(255, 190, 90, 0.35);
   animation: kiosk-drop 0.5s var(--k-spring) both;
 }
 .kiosk-email-photos > img:nth-child(1) {
@@ -842,9 +1008,10 @@
 }
 .kiosk-keyboard-domains > button {
   min-height: clamp(64px, 9.3vw, 100px);
-  border: 0;
+  border: 1px solid var(--k-line);
   border-radius: 999px;
   background: var(--k-glass);
+  color: var(--k-gold-hi);
   font-size: clamp(16px, 2.4vw, 27px);
   font-weight: 700;
 }
@@ -858,30 +1025,33 @@
   min-height: clamp(66px, 11vw, 118px);
   display: grid;
   place-items: center;
-  border: 0;
+  border: 1px solid rgba(232, 200, 121, 0.26);
   border-radius: 18px;
-  background: var(--k-glass);
+  background: linear-gradient(180deg, rgba(40, 32, 52, 0.9), rgba(16, 13, 22, 0.9));
+  color: var(--k-text);
   font-size: clamp(26px, 3.9vw, 42px);
   font-weight: 700;
-  box-shadow: 0 6px 0 rgba(28, 38, 62, 0.4);
+  box-shadow: 0 6px 0 rgba(0, 0, 0, 0.55);
 }
 .kiosk-keyboard-row > button.is-wide {
   flex-grow: 1.9;
   font-size: clamp(22px, 3.2vw, 34px);
 }
 .kiosk-keyboard-row > button.is-accent {
-  background: var(--k-white);
-  color: var(--k-blue);
+  border-color: rgba(246, 220, 143, 0.9);
+  background: linear-gradient(180deg, #2b2111 0%, #120c04 100%);
+  color: var(--k-gold-hi);
 }
 .kiosk-keyboard-row > button.is-muted {
-  background: var(--k-steel);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--k-muted);
 }
 .kiosk-keyboard-row > button:active:not(:disabled),
 .kiosk-keyboard-domains > button:active:not(:disabled) {
   transform: translateY(5px) scale(0.96);
-  background: var(--k-white);
-  color: var(--k-blue);
-  box-shadow: 0 1px 0 rgba(28, 38, 62, 0.4);
+  background: var(--k-metal);
+  color: #1a1206;
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.55), 0 0 20px rgba(255, 200, 100, 0.5);
 }
 .kiosk-email-actions {
   display: flex;
@@ -930,7 +1100,7 @@
   border-radius: 24px;
 }
 .kiosk-envelope-back {
-  background: #c9d6f2;
+  background: #3a2c14;
 }
 .kiosk-envelope-photos {
   position: absolute;
@@ -948,7 +1118,7 @@
   width: 76%;
   aspect-ratio: 3 / 2;
   object-fit: cover;
-  border: 6px solid var(--k-white);
+  border: 5px solid var(--k-gold-hi);
   border-radius: 8px;
   box-shadow: 0 6px 14px var(--k-shadow);
 }
@@ -960,7 +1130,7 @@
 }
 .kiosk-envelope-front {
   z-index: 3;
-  background: var(--k-white);
+  background: var(--k-metal);
   clip-path: polygon(0 0, 50% 54%, 100% 0, 100% 100%, 0 100%);
   box-shadow: 0 30px 60px var(--k-shadow);
 }
@@ -968,7 +1138,7 @@
   z-index: 4;
   height: 66%;
   border-radius: 24px 24px 0 0;
-  background: #dde6f7;
+  background: linear-gradient(180deg, #f6e3a4, #c99a3e);
   clip-path: polygon(0 0, 100% 0, 50% 100%);
   transform-origin: 50% 0;
   animation: kiosk-flap 0.5s ease-in-out 1.15s both;
@@ -983,11 +1153,12 @@
   display: grid;
   place-items: center;
   border-radius: 50%;
-  background: var(--k-white);
-  color: var(--k-blue);
+  background: var(--k-metal);
+  color: #1a1206;
   box-shadow:
-    0 14px 0 var(--k-blue-deep),
-    0 0 90px rgba(244, 246, 250, 0.5);
+    0 0 0 6px rgba(7, 6, 10, 0.9),
+    0 0 0 8px rgba(232, 200, 121, 0.6),
+    0 0 90px rgba(255, 190, 90, 0.6);
   animation: kiosk-pop-in 0.55s var(--k-spring) 2.45s both;
 }
 .kiosk-success-check::after {
@@ -995,17 +1166,19 @@
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  border: 6px solid var(--k-white);
+  border: 5px solid var(--k-gold-hi);
   animation: kiosk-ripple 1.4s ease-out 2.7s 2 both;
 }
 .kiosk-success h1 {
   margin: clamp(24px, 3.4vw, 40px) 0 0;
   font-family: var(--k-display);
   font-weight: 400;
-  font-size: clamp(64px, 11vw, 124px);
+  font-size: clamp(68px, 11.6vw, 132px);
   line-height: 1.05;
-  color: #ffffff;
-  animation: kiosk-rise 0.6s var(--k-ease) 2.6s both;
+  filter: drop-shadow(0 0 14px rgba(255, 200, 100, 0.32));
+  animation:
+    kiosk-rise 0.6s var(--k-ease) 2.6s both,
+    kiosk-shimmer 7s linear infinite;
 }
 .kiosk-success h1 ~ p {
   animation: kiosk-rise 0.6s var(--k-ease) 2.7s both;
@@ -1018,13 +1191,14 @@
 }
 .kiosk-success > p > strong {
   font-weight: 800;
+  color: var(--k-gold-hi);
   word-break: break-word;
 }
 .kiosk-success > .kiosk-success-hint {
   margin-top: 12px;
   font-size: clamp(20px, 2.8vw, 30px);
   font-weight: 500;
-  color: var(--k-soft);
+  color: var(--k-muted);
 }
 .kiosk-success > .kiosk-share-card {
   width: 100%;
@@ -1044,19 +1218,20 @@
   margin: 0;
   font-size: clamp(20px, 2.6vw, 28px);
   font-weight: 600;
-  color: var(--k-soft);
+  color: var(--k-muted);
 }
 .kiosk-reset-bar {
-  height: 12px;
-  border-radius: 6px;
+  height: 10px;
+  border-radius: 5px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(232, 200, 121, 0.16);
 }
 .kiosk-reset-bar > span {
   display: block;
   height: 100%;
-  border-radius: 6px;
-  background: var(--k-white);
+  border-radius: 5px;
+  background: var(--k-metal);
+  box-shadow: 0 0 12px rgba(255, 200, 100, 0.6);
   transition: width 1s linear;
 }
 .kiosk-success-footer > .kiosk-primary {
@@ -1073,6 +1248,7 @@
   position: absolute;
   top: -60px;
   border-radius: 4px;
+  box-shadow: 0 0 10px rgba(255, 200, 100, 0.45);
   animation-name: kiosk-fall;
   animation-timing-function: linear;
   animation-iteration-count: infinite;
@@ -1097,22 +1273,16 @@
 }
 .kiosk-loading-logo {
   width: min(100%, 640px);
-  padding: 24px 32px;
-  border-radius: 40px;
-  background: var(--k-white);
-  box-shadow: 0 14px 0 var(--k-blue-deep);
   animation: kiosk-pop-in 0.7s var(--k-spring) both;
-}
-.kiosk-loading-logo img {
-  width: 100%;
-  height: auto;
 }
 .kiosk-loading h1 {
   margin: 20px 0 0;
   font-family: var(--k-display);
   font-weight: 400;
-  font-size: clamp(48px, 7.4vw, 80px);
+  font-size: clamp(52px, 8vw, 88px);
   line-height: 1.1;
+  filter: drop-shadow(0 0 12px rgba(255, 200, 100, 0.28));
+  animation: kiosk-shimmer 7s linear infinite;
 }
 .kiosk-loading p {
   margin: 0;
@@ -1122,27 +1292,8 @@
   color: var(--k-soft);
 }
 .kiosk-loading-spinner {
-  color: var(--k-white);
-}
-
-/* ---------- Footer ---------- */
-
-.kiosk-footer {
-  width: var(--k-column);
-  display: flex;
-  justify-content: flex-end;
-  padding: 18px 0 clamp(16px, 2.4vw, 26px);
-}
-.kiosk-footer a {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 12px;
-  border-radius: 12px;
-  font-size: 18px;
-  font-weight: 600;
-  color: rgba(244, 246, 250, 0.7);
-  text-decoration: none;
+  color: var(--k-gold);
+  filter: drop-shadow(0 0 10px rgba(255, 200, 100, 0.6));
 }
 
 /* Keep the portrait booth together instead of stretching gaps to the edges. */
@@ -1219,15 +1370,103 @@
     transform: rotate(360deg);
   }
 }
+@keyframes kiosk-shimmer {
+  from {
+    background-position: 0% 0;
+  }
+  to {
+    background-position: 250% 0;
+  }
+}
+@keyframes kiosk-mist {
+  from {
+    transform: translate(-6%, -3%) rotate(0deg);
+  }
+  to {
+    transform: translate(6%, 4%) rotate(12deg);
+  }
+}
+@keyframes kiosk-glass {
+  0%,
+  100% {
+    transform: translateX(-30%);
+  }
+  50% {
+    transform: translateX(30%);
+  }
+}
+@keyframes kiosk-flicker {
+  0%,
+  100% {
+    transform: scale(1, 1);
+  }
+  30% {
+    transform: scale(0.94, 1.06);
+  }
+  60% {
+    transform: scale(1.04, 0.95);
+  }
+}
+@keyframes kiosk-glow {
+  0%,
+  100% {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+@keyframes kiosk-rays {
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@keyframes kiosk-sheen {
+  0% {
+    transform: translateX(0) skewX(-18deg);
+  }
+  45%,
+  100% {
+    transform: translateX(760px) skewX(-18deg);
+  }
+}
+@keyframes kiosk-breathe {
+  0%,
+  100% {
+    opacity: 0.28;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+@keyframes kiosk-btnglow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 18px rgba(246, 200, 100, 0.22),
+      inset 0 0 14px rgba(246, 200, 100, 0.12);
+  }
+  50% {
+    box-shadow:
+      0 0 44px rgba(246, 200, 100, 0.5),
+      inset 0 0 24px rgba(246, 200, 100, 0.24);
+  }
+}
 @keyframes kiosk-chase {
   0%,
   30% {
-    background: #ffffff;
-    box-shadow: 0 0 14px 5px rgba(255, 255, 255, 0.85);
+    background: var(--k-gold-hi);
+    box-shadow: 0 0 14px 5px rgba(255, 200, 100, 0.85);
   }
   36%,
   100% {
-    background: #7f9bd8;
+    background: var(--k-bronze);
     box-shadow: none;
   }
 }
@@ -1237,7 +1476,7 @@
     opacity: 1;
   }
   50% {
-    opacity: 0.25;
+    opacity: 0.3;
   }
 }
 @keyframes kiosk-rise {
@@ -1300,7 +1539,7 @@
 }
 @keyframes kiosk-develop {
   0% {
-    filter: brightness(2.4) saturate(0) blur(8px);
+    filter: brightness(2.4) sepia(0.6) saturate(0) blur(8px);
   }
   100% {
     filter: none;
@@ -1320,25 +1559,21 @@
     transform: none;
   }
 }
-@keyframes kiosk-glow {
+@keyframes kiosk-pulse-ring {
   0% {
-    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0.55);
+    box-shadow: 0 0 0 0 rgba(255, 210, 120, 0.6);
   }
   100% {
-    box-shadow: 0 0 0 18px rgba(255, 255, 255, 0);
+    box-shadow: 0 0 0 18px rgba(255, 210, 120, 0);
   }
 }
 @keyframes kiosk-ring {
   0% {
-    box-shadow:
-      0 12px 0 var(--k-blue-deep),
-      0 0 0 0 rgba(244, 246, 250, 0.6);
+    box-shadow: 0 0 0 0 rgba(255, 210, 120, 0.55);
   }
   70%,
   100% {
-    box-shadow:
-      0 12px 0 var(--k-blue-deep),
-      0 0 0 34px rgba(244, 246, 250, 0);
+    box-shadow: 0 0 0 34px rgba(255, 210, 120, 0);
   }
 }
 @keyframes kiosk-flip-in {
@@ -1447,7 +1682,8 @@
 @media (prefers-reduced-motion: reduce) {
   .kiosk-shell *,
   .kiosk-shell *::before,
-  .kiosk-shell *::after {
+  .kiosk-shell *::after,
+  .kiosk-shell::before {
     animation: none !important;
     transition: none !important;
   }
@@ -1455,7 +1691,8 @@
     display: none;
   }
   .kiosk-envelope,
-  .kiosk-confetti {
+  .kiosk-confetti,
+  .kiosk-fx {
     display: none;
   }
 }

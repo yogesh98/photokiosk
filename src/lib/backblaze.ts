@@ -4,7 +4,6 @@ import {
   beginSessionShare,
   finishSessionShare,
   getB2Credentials,
-  getSettings,
   readMedia,
   StudioError,
 } from "./studio-store";
@@ -218,7 +217,6 @@ export async function uploadSessionToB2(id: string, fetcher: Fetcher = fetch) {
   if (session.sharing?.status === "uploaded") return session;
   try {
     const connection = await connect(fetcher);
-    const settings = await getSettings();
     const prefix = connection.namePrefix;
     const directory = `${prefix}${prefix && !prefix.endsWith("/") ? "/" : ""}photo-booth/${session.id}/`;
     const photos = await Promise.all(session.photos.map((url) =>
@@ -228,7 +226,7 @@ export async function uploadSessionToB2(id: string, fetcher: Fetcher = fetch) {
     for (let index = 0; index < photos.length; index++)
       target = await upload(connection, target, `${directory}${index + 1}.jpg`, photos[index], "image/jpeg", "inline", fetcher);
     // A gallery is published only once all three photos are ready.
-    await upload(connection, target, `${directory}index.html`, Buffer.from(renderPhotoGallery(settings.eventName), "utf8"), "text/html; charset=utf-8", "inline", fetcher);
+    await upload(connection, target, `${directory}index.html`, Buffer.from(renderPhotoGallery(), "utf8"), "text/html; charset=utf-8", "inline", fetcher);
     return await finishSessionShare(id, {
       galleryUrl: publicURL(connection, `${directory}index.html`),
       photoUrls: photos.map((_, index) => publicURL(connection, `${directory}${index + 1}.jpg`)),

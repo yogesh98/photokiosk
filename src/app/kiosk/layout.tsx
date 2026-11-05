@@ -1,8 +1,9 @@
 import localFont from "next/font/local";
 
 // Bundled with the app so the booth keeps its look without an internet connection.
+// Dehanna, from the Diwali 2026 logo pack.
 const display = localFont({
-  src: "./fonts/Shrikhand-Regular.woff2",
+  src: "./fonts/Dehanna-Regular.woff2",
   weight: "400",
   variable: "--kiosk-font-display",
   display: "swap",

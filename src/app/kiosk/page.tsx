@@ -31,6 +31,9 @@ import {
 import { PhotoSharing } from "@/components/kiosk/photo-sharing";
 import { EmailKeyboard } from "@/components/kiosk/email-keyboard";
 import { LocalIpOverlay } from "@/components/kiosk/local-ip-overlay";
+import { DiwaliLogo } from "@/components/kiosk/diwali-logo";
+import { MagicLayer } from "@/components/kiosk/magic-layer";
+import type { FxRect, MagicFx } from "@/components/kiosk/magic-fx";
 import {
   runCaptureSequence,
   waitForCaptureScene,
@@ -40,6 +43,15 @@ import {
 import "./kiosk.css";
 
 type Stage = "idle" | "capturing" | "saving" | "review" | "sending" | "success";
+
+/** How much drifting gold light floats behind each screen. */
+const AMBIENT: Record<Stage, number> = { idle: 1, capturing: 0.55, saving: 0.7, review: 0.8, sending: 0.8, success: 1 };
+
+const rectOf = (element: Element | null | undefined): FxRect | null => {
+  const box = element?.getBoundingClientRect();
+  return box && box.width > 0 ? { left: box.left, top: box.top, width: box.width, height: box.height } : null;
+};
+const centerOf = (rect: FxRect): [number, number] => [rect.left + rect.width / 2, rect.top + rect.height / 2];
 
 async function api<T>(
   url: string,
@@ -97,6 +109,11 @@ export default function KioskPage() {
   const settingsAbortRef = useRef<AbortController | null>(null);
   const requestIdRef = useRef("");
   const flashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const fxRef = useRef<MagicFx | null>(null);
+  const fxTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const previewRef = useRef<HTMLDivElement>(null);
+  const slotsRef = useRef<HTMLElement>(null);
+  const startButtonRef = useRef<HTMLButtonElement>(null);
 
   const loadStudio = useCallback(async (signal?: AbortSignal) => {
     settingsAbortRef.current?.abort();
@@ -136,8 +153,18 @@ export default function KioskPage() {
       flowAbortRef.current?.abort();
       shareRequestRef.current?.controller.abort();
       if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current);
+      fxTimersRef.current.forEach(clearTimeout);
     };
   }, [loadStudio]);
+
+  /** Runs a light effect later, unless the guest has moved on by then. */
+  const fxLater = useCallback((ms: number, run: (fx: MagicFx) => void) => {
+    const timer = setTimeout(() => {
+      fxTimersRef.current = fxTimersRef.current.filter((item) => item !== timer);
+      if (fxRef.current) run(fxRef.current);
+    }, ms);
+    fxTimersRef.current.push(timer);
+  }, []);
 
   // Pick up the host's camera and background changes between guests.
   useEffect(() => {
@@ -154,6 +181,9 @@ export default function KioskPage() {
   }, [stage, loadStudio]);
 
   const reset = useCallback(() => {
+    fxTimersRef.current.forEach(clearTimeout);
+    fxTimersRef.current = [];
+    fxRef.current?.clear();
     flowAbortRef.current?.abort();
     flowAbortRef.current = null;
     shareRequestRef.current?.controller.abort();
@@ -287,7 +317,17 @@ export default function KioskPage() {
     setSession(null);
     setError(null);
     setStage("capturing");
+    const button = rectOf(startButtonRef.current);
+    const preview = rectOf(previewRef.current);
+    if (button) {
+      const [x, y] = centerOf(button);
+      fxRef.current?.ring(x, y, { count: 160, speed: 620 });
+      fxRef.current?.burst(x, y, { count: 110, speed: 760, glints: 24, flash: 110 });
+    }
+    // Flames spiral up around the camera, like stepping into Atma Mirror.
+    if (preview) fxRef.current?.vortex(preview, { strands: 3, duration: 1.6, radius: 0.5, turns: 1.1, width: 0.2, tilt: 0.16 });
     let preparedCapture: CapturePhoto | null = null;
+    let taken = 0;
     try {
       const capturedPhotos = await runCaptureSequence({
         signal: controller.signal,
@@ -308,12 +348,33 @@ export default function KioskPage() {
         onCountdown: (seconds, number) => {
           setCountdown(seconds);
           setPhotoNumber(number);
+          const frame = rectOf(previewRef.current);
+          if (frame && seconds > 0) {
+            const [x, y] = centerOf(frame);
+            fxRef.current?.ring(x, y, { count: 70, speed: 300, life: 0.8 });
+          }
         },
         onPhoto: (photo) => {
+          const index = taken++;
           setPhotos((current) => [...current, photo]);
           setFlash(true);
           if (flashTimeoutRef.current) clearTimeout(flashTimeoutRef.current);
           flashTimeoutRef.current = setTimeout(() => setFlash(false), 230);
+          // A burst of light at the camera, then sparkles carry the photo to its slot.
+          const frame = rectOf(previewRef.current);
+          const slot = rectOf(slotsRef.current?.children[index]);
+          const fx = fxRef.current;
+          if (!frame || !fx) return;
+          const from = centerOf(frame);
+          fx.burst(from[0], from[1], { count: 90, speed: 680, glints: 18, flash: 140 });
+          if (!slot) return;
+          const arrive = fx.flight(from, centerOf(slot), { count: 150 });
+          fxLater(arrive * 1000 - 80, (later) => {
+            const landed = rectOf(slotsRef.current?.children[index]) ?? slot;
+            const [x, y] = centerOf(landed);
+            later.burst(x, y, { count: 50, speed: 420, glints: 10, flash: 70 });
+            later.twinkle(landed, { count: 14, duration: 0.7, size: 11 });
+          });
         },
       });
       await savePhotos(capturedPhotos, controller.signal);
@@ -381,6 +442,20 @@ export default function KioskPage() {
     if (showEmailSheet) emailInputRef.current?.focus();
   }, [showEmailSheet]);
 
+  // Light for the photos once they're ready, and fireworks when they're sent.
+  useEffect(() => {
+    if (stage === "review") {
+      fxLater(250, (fx) => {
+        const frame = rectOf(previewRef.current);
+        if (frame) fx.twinkle(frame, { count: 26, duration: 1.2 });
+      });
+    } else if (stage === "success") {
+      fxLater(2500, (fx) => {
+        fx.fireworks({ left: 0, top: 0, width: window.innerWidth, height: window.innerHeight * 0.55 }, { count: 7, duration: 6 });
+      });
+    }
+  }, [stage, fxLater]);
+
   const capturePrompt = preparingPhoto
     ? "Getting your next background ready…"
     : countdown === 0
@@ -393,16 +468,12 @@ export default function KioskPage() {
 
   return (
     <main className={`kiosk-shell is-${stage}`}>
+      <MagicLayer fxRef={fxRef} ambient={studio ? AMBIENT[stage] : 1} />
       <LocalIpOverlay />
       {studio && stage !== "idle" && (
         <header className="kiosk-header">
           <div className="kiosk-brand">
-            <img
-              src="/brand/kdc-logo.png"
-              alt="Kids’ Diwali Celebration"
-              width={1024}
-              height={576}
-            />
+            <DiwaliLogo />
           </div>
         </header>
       )}
@@ -410,12 +481,7 @@ export default function KioskPage() {
       {!studio ? (
         <section className="kiosk-loading">
           <div className="kiosk-loading-logo">
-            <img
-              src="/brand/kdc-logo.png"
-              alt="Kids’ Diwali Celebration"
-              width={1024}
-              height={576}
-            />
+            <DiwaliLogo />
           </div>
           <h1>{loadingError ? "One moment…" : "Setting up the booth…"}</h1>
           <p>
@@ -516,12 +582,7 @@ export default function KioskPage() {
                   />
                 ))}
                 <div className="kiosk-sign-panel">
-                  <img
-                    src="/brand/kdc-logo.png"
-                    alt="Kids’ Diwali Celebration"
-                    width={1024}
-                    height={576}
-                  />
+                  <DiwaliLogo />
                   <h1>
                     <span>Photo</span>
                     <span>booth</span>
@@ -535,7 +596,7 @@ export default function KioskPage() {
             className={`kiosk-experience ${reviewing ? "is-reviewing" : ""}`}
           >
             <div className="kiosk-camera-area">
-              <div className="kiosk-preview-frame">
+              <div className="kiosk-preview-frame" ref={previewRef}>
                 <LivePreview
                   settings={studio.settings}
                   background={background}
@@ -576,7 +637,11 @@ export default function KioskPage() {
                           className="still-camera-spinner"
                         />
                       ) : (
-                        countdown || <Camera size={170} strokeWidth={1.8} />
+                        countdown ? (
+                          <span className="kiosk-count-number">{countdown}</span>
+                        ) : (
+                          <Camera size={170} strokeWidth={1.8} />
+                        )
                       )}
                     </strong>
                   </div>
@@ -674,7 +739,7 @@ export default function KioskPage() {
                 </div>
               </aside>
             ) : (
-              <aside className="kiosk-photo-slots" aria-label="Your three photos">
+              <aside className="kiosk-photo-slots" aria-label="Your three photos" ref={slotsRef}>
                 {[0, 1, 2].map((index) => (
                   <div
                     className={`kiosk-slot ${photos[index] ? "is-filled" : ""} ${isCapturing && !photos[index] && photoNumber === index + 1 ? "is-next" : ""}`}
@@ -757,6 +822,7 @@ export default function KioskPage() {
               ) : (
                 <>
                   <button
+                    ref={startButtonRef}
                     className="kiosk-primary kiosk-start-button"
                     type="button"
                     onClick={() => void startCapture()}
@@ -767,7 +833,7 @@ export default function KioskPage() {
                     }
                   >
                     <Camera size={60} strokeWidth={2.2} />
-                    Tap to start
+                    <span className="kiosk-start-label">Tap to start</span>
                   </button>
                   <ol className="kiosk-instructions">
                     <li>
@@ -871,18 +937,30 @@ export default function KioskPage() {
   );
 }
 
-/** Marquee lights around the sign: positions run clockwise from the top-left corner. */
+/**
+ * Marquee lights around the sign, clockwise from the top-left corner. They run
+ * 15px in from the edge, so on the sign's 52px rounded corners they follow a
+ * 37px curve: one bulb sits at the middle of each corner, and the rest are
+ * spaced evenly along the straight sides between the curves.
+ */
 const BULBS: CSSProperties[] = (() => {
-  const across = 16;
-  const down = 5;
-  const edge = (fraction: number) =>
-    `calc(15px + (100% - 30px) * ${fraction.toFixed(4)})`;
-  const points: Array<[string, string]> = [];
-  for (let i = 0; i < across; i++) points.push([edge(i / across), "15px"]);
-  for (let i = 0; i < down; i++) points.push(["calc(100% - 15px)", edge(i / down)]);
-  for (let i = 0; i < across; i++)
-    points.push([edge(1 - i / across), "calc(100% - 15px)"]);
-  for (let i = 0; i < down; i++) points.push(["15px", edge(1 - i / down)]);
+  const inset = 15;
+  const radius = 52; // .kiosk-sign border-radius
+  const across = 15;
+  const down = 6;
+  const corner = `${(radius - (radius - inset) * Math.SQRT1_2).toFixed(2)}px`;
+  const far = `calc(100% - ${corner})`;
+  const side = (fraction: number) =>
+    `calc(${radius}px + (100% - ${radius * 2}px) * ${fraction.toFixed(4)})`;
+  const step = (count: number, i: number) => (i + 0.5) / count;
+  const points: Array<[string, string]> = [[corner, corner]];
+  for (let i = 0; i < across; i++) points.push([side(step(across, i)), `${inset}px`]);
+  points.push([far, corner]);
+  for (let i = 0; i < down; i++) points.push([`calc(100% - ${inset}px)`, side(step(down, i))]);
+  points.push([far, far]);
+  for (let i = 0; i < across; i++) points.push([side(1 - step(across, i)), `calc(100% - ${inset}px)`]);
+  points.push([corner, far]);
+  for (let i = 0; i < down; i++) points.push([`${inset}px`, side(1 - step(down, i))]);
   return points.map(([left, top], index) => ({
     left,
     top,
@@ -897,7 +975,7 @@ const CONFETTI: CSSProperties[] = (() => {
     seed = (seed * 9301 + 49297) % 233280;
     return seed / 233280;
   };
-  const colors = ["#f4f6fa", "#ffffff", "#5a6473", "#a9bfef", "#2f55b0", "#dde6f7"];
+  const colors = ["#ffe2a0", "#fff1c4", "#e8c879", "#ffb877", "#b8892e", "#bff3ff"];
   return Array.from({ length: 44 }, (_, index) => ({
     left: `${Math.round(random() * 96)}%`,
     width: `${Math.round(12 + random() * 10)}px`,

@@ -147,7 +147,7 @@ describe("Backblaze galleries", { concurrency: false }, () => {
     }
   });
 
-  test("uploads three real JPEGs then a mobile gallery with separate downloads and no local URLs or secrets", async () => {
+  test("uploads three real JPEGs then a mobile gallery with the fixed event name, separate downloads, and no local URLs or secrets", async () => {
     await isolated();
     await updateSettings({ eventName: '<script>alert("test")</script> & Friends' });
     const captured = await createSession(sessionInput());
@@ -168,7 +168,10 @@ describe("Backblaze galleries", { concurrency: false }, () => {
     assert.equal(gallery.headers.get("Content-Type"), "text/html; charset=utf-8");
     assert.equal(gallery.headers.get("X-Bz-Info-b2-content-disposition"), "inline");
     const html = gallery.bytes.toString("utf8");
-    assert.match(html, /&lt;script&gt;alert\(&quot;test&quot;\)&lt;\/script&gt; &amp; Friends/);
+    // The download page always shows the fixed event name, never the Admin workspace name.
+    assert.match(html, /<p class="event-name">BAPS Edison Diwali 2026<\/p>/);
+    assert.match(html, /<title>BAPS Edison Diwali 2026 · Your photos<\/title>/);
+    assert.ok(!html.includes("Friends"), "Gallery must not show the Admin workspace name");
     for (const value of [KEY, ACCOUNT_TOKEN, "private-upload-token", "localhost", "/api/media/", '<script>alert("test")</script>', ".zip"])
       assert.ok(!html.includes(value), `Gallery leaked ${value}`);
     for (const file of ["1.jpg", "2.jpg", "3.jpg"]) assert.ok(html.includes(`href="${file}"`));
