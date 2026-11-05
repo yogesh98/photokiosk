@@ -9,6 +9,8 @@ interface CompositeOptions {
   width: number;
   settings: KioskSettings;
   background: HTMLImageElement | null;
+  /** Drawn over the finished photo, stretched to fill its 3:2 frame. */
+  overlay?: HTMLImageElement | null;
   signal: AbortSignal;
 }
 
@@ -17,7 +19,7 @@ export function createBackgroundCompositor() {
   const foreground = document.createElement("canvas");
   return async function composite({
     source, sourceWidth, sourceHeight, output, width, settings,
-    background, signal,
+    background, overlay, signal,
   }: CompositeOptions): Promise<void> {
     signal.throwIfAborted();
     const height = Math.round(width * 2 / 3);
@@ -54,5 +56,7 @@ export function createBackgroundCompositor() {
     if (background && settings.backgroundMode !== "off")
       drawCover(context, background, background.naturalWidth, background.naturalHeight, width, height);
     context.drawImage(foreground, 0, 0);
+    // Never mirrored, so the overlay's text and logos read correctly.
+    if (overlay) context.drawImage(overlay, 0, 0, width, height);
   };
 }

@@ -10,7 +10,8 @@ export async function GET(
     const bytes = await readMedia(path);
     return new Response(new Uint8Array(bytes), {
       headers: {
-        "Content-Type": "image/jpeg",
+        // Overlays keep their transparency as PNG; everything else is JPEG.
+        "Content-Type": path.at(-1)?.endsWith(".png") ? "image/png" : "image/jpeg",
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
         "Content-Security-Policy": "default-src 'none'",

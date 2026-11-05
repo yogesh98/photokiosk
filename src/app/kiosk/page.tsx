@@ -195,6 +195,7 @@ export default function KioskPage() {
     ? resolveSessionBackgrounds(studio.settings, studio.backgrounds)
     : [undefined, undefined, undefined];
   const background = plannedBackgrounds[photoNumber - 1];
+  const overlay = studio?.overlays.find((item) => item.id === studio.settings.activeOverlayId);
   const onCaptureReady = useCallback((capture: CapturePhoto | null, backgroundUrl?: string) => {
     captureRef.current = { capture, backgroundUrl };
   }, []);
@@ -538,6 +539,7 @@ export default function KioskPage() {
                 <LivePreview
                   settings={studio.settings}
                   background={background}
+                  overlay={overlay}
                   enabled={!reviewing && !settingsRefreshing}
                   allowCanonPreview={stage === "idle" && !settingsRefreshing}
                   autoConnectCanon

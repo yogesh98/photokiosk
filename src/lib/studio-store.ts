@@ -18,6 +18,7 @@ import {
   type BackgroundMode,
   type CameraExposureMode,
   type KioskSettings,
+  type Overlay,
   type PhotoSession,
   type StudioData,
 } from "./kiosk-types";
@@ -144,6 +145,9 @@ async function withStore<T>(
           (state.settings as LegacySettings).backgroundMode !== "ai") ||
         (state.settings.backgroundSequence !== undefined &&
           !isBackgroundSequence(state.settings.backgroundSequence)) ||
+        (state.settings.activeOverlayId !== undefined &&
+          typeof state.settings.activeOverlayId !== "string") ||
+        (state.overlays !== undefined && !Array.isArray(state.overlays)) ||
         !Array.isArray(state.backgrounds) ||
         !Array.isArray(state.sessions)
       ) {
@@ -159,6 +163,7 @@ async function withStore<T>(
         version: 1,
         settings: structuredClone(DEFAULT_SETTINGS),
         backgrounds: structuredClone(BUILTINS),
+        overlays: [],
         sessions: [],
         gmailAppPassword: "",
         b2ApplicationKey: "",
@@ -193,6 +198,15 @@ async function withStore<T>(
     if (state.settings.backgroundSequence === undefined) {
       const id = state.settings.activeBackgroundId;
       state.settings.backgroundSequence = { mode: "single", photoIds: [id, id, id] };
+      changed = true;
+    }
+    // Booths saved before overlays existed start without one.
+    if (state.overlays === undefined) {
+      state.overlays = [];
+      changed = true;
+    }
+    if (state.settings.activeOverlayId === undefined) {
+      state.settings.activeOverlayId = "";
       changed = true;
     }
     if (state.settings.b2 === undefined) {
@@ -250,6 +264,7 @@ export async function readStudio(): Promise<StudioData> {
   return withStore((state) => ({
     settings: publicSettings(state),
     backgrounds: state.backgrounds,
+    overlays: state.overlays,
     sessions: state.sessions,
   }));
 }
@@ -321,6 +336,13 @@ export async function updateSettings(input: unknown): Promise<KioskSettings> {
       if (!state.backgrounds.some((background) => background.id === id))
         throw new StudioError("Choose an existing background.");
       settings.activeBackgroundId = id;
+    }
+    if ("activeOverlayId" in patch) {
+      // An empty ID turns the overlay off.
+      const id = text(patch.activeOverlayId, "Overlay", 100);
+      if (id && !state.overlays.some((overlay) => overlay.id === id))
+        throw new StudioError("Choose an existing overlay.");
+      settings.activeOverlayId = id;
     }
     if ("backgroundSequence" in patch) {
       if (!isBackgroundSequence(patch.backgroundSequence))
@@ -526,6 +548,81 @@ export async function deleteBackground(id: string) {
   });
   return result;
 }
+/** Keep transparency, which is the point of an overlay. */
+async function normalizeOverlay(bytes: Uint8Array): Promise<Buffer> {
+  if (!bytes.length || bytes.length > MAX_IMAGE_BYTES)
+    throw new StudioError("Choose an image smaller than 10 MB.", 413);
+  const options = { limitInputPixels: 50_000_000, animated: false };
+  let format: string | undefined;
+  let opaque: boolean;
+  try {
+    const metadata = await sharp(bytes, options).metadata();
+    if (!metadata.width || !metadata.height) throw new Error("size");
+    format = metadata.format;
+    opaque = !metadata.hasAlpha || (await sharp(bytes, options).stats()).isOpaque;
+  } catch {
+    throw new StudioError(
+      "The overlay could not be read. Choose a valid PNG or WebP image.",
+    );
+  }
+  if (format !== "png" && format !== "webp")
+    throw new StudioError(
+      "Overlays need a transparent background. Choose a PNG or WebP image; JPEGs cannot be transparent.",
+    );
+  if (opaque)
+    throw new StudioError(
+      "This image has no transparent areas, so it would cover the whole photo. Export it as a PNG with a transparent background.",
+    );
+  try {
+    // Photos are saved at most 2400 pixels wide, so 3000 keeps every detail.
+    return await sharp(bytes, options)
+      .rotate()
+      .resize(3000, 3000, { fit: "inside", withoutEnlargement: true })
+      .png()
+      .toBuffer();
+  } catch {
+    throw new StudioError(
+      "The overlay could not be read. Choose a valid PNG or WebP image.",
+    );
+  }
+}
+
+export async function addOverlay(
+  file: File,
+  nameInput: unknown,
+): Promise<Overlay> {
+  const name = text(nameInput, "Overlay name", 80, false);
+  if (file.size > MAX_IMAGE_BYTES)
+    throw new StudioError("Choose an image smaller than 10 MB.", 413);
+  const bytes = await normalizeOverlay(new Uint8Array(await file.arrayBuffer()));
+  return withStore(async (state, root) => {
+    const id = randomUUID();
+    const overlay: Overlay = {
+      id,
+      name,
+      url: `/api/media/overlays/${id}.png`,
+      createdAt: new Date().toISOString(),
+    };
+    await writePrivateFile(root, ["overlays", `${id}.png`], bytes);
+    state.overlays.push(overlay);
+    return overlay;
+  }, true);
+}
+export async function deleteOverlay(id: string) {
+  const result = await withStore((state) => {
+    if (!state.overlays.some((item) => item.id === id))
+      throw new StudioError("Overlay not found.", 404);
+    state.overlays = state.overlays.filter((item) => item.id !== id);
+    if (state.settings.activeOverlayId === id)
+      state.settings.activeOverlayId = "";
+    return { success: true, settings: publicSettings(state) };
+  }, true);
+  // Commit the deletion before removing pixels so a failed state write keeps the old overlay usable.
+  await rm(path.join(dataDirectory(), "overlays", `${id}.png`), {
+    force: true,
+  });
+  return result;
+}
 function decodePhoto(value: unknown): Buffer {
   if (
     typeof value !== "string" ||
@@ -722,7 +819,7 @@ export async function readMedia(parts: string[]): Promise<Buffer> {
   const relative = parts.join("/");
   if (
     !new RegExp(
-      `^(?:backgrounds/${UUID}\\.jpg|sessions/${UUID}/[123]\\.jpg)$`,
+      `^(?:backgrounds/${UUID}\\.jpg|overlays/${UUID}\\.png|sessions/${UUID}/[123]\\.jpg)$`,
     ).test(relative)
   )
     throw new StudioError("Image not found.", 404);

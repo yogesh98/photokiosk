@@ -5,7 +5,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, LoaderCircle, RefreshCw, VideoOff } from "lucide-react";
-import type { Background, KioskSettings } from "@/lib/kiosk-types";
+import type { Background, KioskSettings, Overlay } from "@/lib/kiosk-types";
 import { createBackgroundCompositor } from "@/lib/background-compositor";
 import { requestCanonPhoto, waitForPreview } from "./capture-camera";
 import { createCanonLiveView } from "./canon-live-view";
@@ -22,6 +22,7 @@ export interface PreviewStatus {
 interface LivePreviewProps {
   settings: KioskSettings;
   background?: Background;
+  overlay?: Overlay;
   enabled?: boolean;
   allowCanonPreview?: boolean;
   autoConnectCanon?: boolean;
@@ -46,9 +47,56 @@ function readableCameraError(error: unknown): string {
     : "The camera could not be started. Please try again.";
 }
 
+interface SceneLayer {
+  image: HTMLImageElement | null;
+  url: string | undefined;
+  /** null while loading; undefined when there is nothing to draw. */
+  loadedUrl: string | undefined | null;
+}
+
+const layerReady = (layer: SceneLayer) =>
+  layer.loadedUrl !== null && layer.loadedUrl === layer.url;
+
+/** Load one image layer so rendering and capture can wait for exactly this URL. */
+function useSceneImage(url: string | undefined, retry: number, failure: string) {
+  const layerRef = useRef<SceneLayer>({ image: null, url: undefined, loadedUrl: null });
+  const [status, setStatus] = useState<{
+    url?: string;
+    loaded: boolean;
+    error: string | null;
+  }>({ loaded: false, error: null });
+  useEffect(() => {
+    let current = true;
+    layerRef.current = { image: null, url, loadedUrl: url ? null : undefined };
+    queueMicrotask(() => {
+      if (current) setStatus({ url, loaded: false, error: null });
+    });
+    if (!url) return;
+    const image = new Image();
+    image.crossOrigin = "anonymous";
+    image.onload = () => {
+      if (current) {
+        layerRef.current = { image, url, loadedUrl: url };
+        setStatus({ url, loaded: true, error: null });
+      }
+    };
+    image.onerror = () => {
+      if (current) setStatus({ url, loaded: false, error: failure });
+    };
+    image.src = url;
+    return () => {
+      current = false;
+    };
+  }, [url, retry, failure]);
+  const error = status.url === url ? status.error : null;
+  const loading = Boolean(url && (status.url !== url || (!status.loaded && !error)));
+  return { layerRef, error, loading };
+}
+
 export function LivePreview({
   settings,
   background,
+  overlay,
   enabled = true,
   allowCanonPreview = true,
   autoConnectCanon = false,
@@ -60,9 +108,6 @@ export function LivePreview({
   const videoRef = useRef<HTMLVideoElement>(null);
   const sourceRef = useRef<CanvasImageSource | null>(null);
   const sourceSizeRef = useRef({ width: 0, height: 0 });
-  const backgroundRef = useRef<HTMLImageElement | null>(null);
-  const backgroundUrlRef = useRef<string | undefined>(undefined);
-  const loadedBackgroundUrlRef = useRef<string | undefined | null>(null);
   const settingsRef = useRef(settings);
   const renderFlightRef = useRef<Promise<void> | null>(null);
   const sourceAbortRef = useRef<AbortController | null>(null);
@@ -78,12 +123,8 @@ export function LivePreview({
   const [cameraReady, setCameraReady] = useState(false);
   const [readySourceKey, setReadySourceKey] = useState("");
   const [renderedBackgroundUrl, setRenderedBackgroundUrl] = useState<string | undefined | null>(null);
+  const [renderedOverlayUrl, setRenderedOverlayUrl] = useState<string | undefined | null>(null);
   const [cameraError, setCameraError] = useState<string | null>(null);
-  const [backgroundStatus, setBackgroundStatus] = useState<{
-    url?: string;
-    loaded: boolean;
-    error: string | null;
-  }>({ loaded: false, error: null });
   const [retry, setRetry] = useState(0);
   const [canonStarting, setCanonStarting] = useState(false);
   const [hasCanonFrame, setHasCanonFrame] = useState(false);
@@ -93,13 +134,29 @@ export function LivePreview({
   // The reason for an interruption that automatic recovery is retrying.
   const [canonReconnecting, setCanonReconnecting] = useState<string | null>(null);
   const backgroundUrl = settings.backgroundMode === "off" ? undefined : background?.url;
-  const backgroundError =
-    backgroundStatus.url === backgroundUrl ? backgroundStatus.error : null;
-  const backgroundLoading = Boolean(
-    backgroundUrl &&
-    (backgroundStatus.url !== backgroundUrl ||
-      (!backgroundStatus.loaded && !backgroundError)),
+  // Overlays apply whether or not the background is replaced.
+  const overlayUrl = overlay?.url;
+  const {
+    layerRef: backgroundLayer,
+    error: backgroundError,
+    loading: backgroundLoading,
+  } = useSceneImage(
+    backgroundUrl,
+    retry,
+    "The selected background could not be loaded. Please choose another in the studio.",
   );
+  const {
+    layerRef: overlayLayer,
+    error: overlayError,
+    loading: overlayLoading,
+  } = useSceneImage(
+    overlayUrl,
+    retry,
+    "The selected overlay could not be loaded. Please choose another in the studio.",
+  );
+  const sceneError = backgroundError || overlayError;
+  const sceneLoading = backgroundLoading || overlayLoading;
+  const sceneRendered = renderedBackgroundUrl === backgroundUrl && renderedOverlayUrl === overlayUrl;
   const sourceKey = JSON.stringify([
     enabled,
     settings.camera.mode,
@@ -115,8 +172,8 @@ export function LivePreview({
     // session still recovers a dropped stream during its countdowns; the
     // shutter itself is protected by capturingRef.
     canonAutoConnectRef.current = autoConnectCanon && enabled && isCanon &&
-      !processingFailed && !backgroundError;
-  }, [autoConnectCanon, enabled, isCanon, processingFailed, backgroundError]);
+      !processingFailed && !sceneError;
+  }, [autoConnectCanon, enabled, isCanon, processingFailed, sceneError]);
 
   const beginCanonLiveView = useCallback((live: ReturnType<typeof createCanonLiveView>, signal?: AbortSignal) => {
     setCanonStarting(true);
@@ -256,45 +313,11 @@ export function LivePreview({
       beginCanonLiveView(live);
     });
     return () => { current = false; };
-  }, [autoConnectCanon, enabled, isCanon, allowCanonPreview, processingFailed, backgroundError, beginCanonLiveView]);
+  }, [autoConnectCanon, enabled, isCanon, allowCanonPreview, processingFailed, sceneError, beginCanonLiveView]);
 
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
-
-  useEffect(() => {
-    let current = true;
-    backgroundUrlRef.current = backgroundUrl;
-    loadedBackgroundUrlRef.current = backgroundUrl ? null : undefined;
-    backgroundRef.current = null;
-    queueMicrotask(() => {
-      if (current) setBackgroundStatus({ url: backgroundUrl, loaded: false, error: null });
-    });
-    if (!backgroundUrl) return;
-    const backdrop = new Image();
-    backdrop.crossOrigin = "anonymous";
-    backdrop.onload = () => {
-      if (current) {
-        backgroundRef.current = backdrop;
-        loadedBackgroundUrlRef.current = backgroundUrl;
-        setBackgroundStatus({ url: backgroundUrl, loaded: true, error: null });
-      }
-    };
-    backdrop.onerror = () => {
-      if (current) {
-        setBackgroundStatus({
-          url: backgroundUrl,
-          loaded: false,
-          error:
-            "The selected background could not be loaded. Please choose another in the studio.",
-        });
-      }
-    };
-    backdrop.src = backgroundUrl;
-    return () => {
-      current = false;
-    };
-  }, [backgroundUrl, retry]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -306,6 +329,7 @@ export function LivePreview({
     let lastSource: CanvasImageSource | null = null;
     let lastSettingsKey = "";
     let lastBackground: HTMLImageElement | null = null;
+    let lastOverlay: HTMLImageElement | null = null;
     let renderFailed = false;
     const composite = createBackgroundCompositor();
     const retained = settings.camera.mode === "canon" ? canonFrameRef.current : null;
@@ -332,14 +356,17 @@ export function LivePreview({
       const settingsKey = JSON.stringify([
         currentSettings.camera.mirror, currentSettings.backgroundMode, currentSettings.chroma,
       ]);
-      const backdrop = backgroundRef.current;
-      const sceneUrl = loadedBackgroundUrlRef.current;
-      const sceneLoaded = sceneUrl !== null && sceneUrl === backgroundUrlRef.current;
+      const scene = backgroundLayer.current;
+      const topLayer = overlayLayer.current;
+      const backdrop = scene.image;
+      const overlayImage = topLayer.image;
+      const sceneLoaded = layerReady(scene) && layerReady(topLayer);
       const changed =
         settings.camera.mode === "browser" ||
         source !== lastSource ||
         settingsKey !== lastSettingsKey ||
-        backdrop !== lastBackground;
+        backdrop !== lastBackground ||
+        overlayImage !== lastOverlay;
       if (
         !capturingRef.current && !renderFailed && sceneLoaded && changed && source && width && height &&
         canvasRef.current && time - lastRenderTime >= 1000 / 24
@@ -348,7 +375,7 @@ export function LivePreview({
         const flight = composite({
           source, sourceWidth: width, sourceHeight: height,
           output: canvasRef.current, width: 960, settings: currentSettings,
-          background: backdrop, signal: controller.signal,
+          background: backdrop, overlay: overlayImage, signal: controller.signal,
         });
         renderFlightRef.current = flight;
         try {
@@ -357,10 +384,12 @@ export function LivePreview({
           lastSource = source;
           lastSettingsKey = settingsKey;
           lastBackground = backdrop;
+          lastOverlay = overlayImage;
           renderedCanonFrameRef.current = frameVersion;
           setCameraReady(true);
           setReadySourceKey(sourceKey);
-          setRenderedBackgroundUrl(sceneUrl);
+          setRenderedBackgroundUrl(scene.loadedUrl);
+          setRenderedOverlayUrl(topLayer.loadedUrl);
         } catch (error) {
           if (!controller.signal.aborted) {
             renderFailed = true;
@@ -441,6 +470,8 @@ export function LivePreview({
     settings.backgroundMode,
     retry,
     sourceKey,
+    backgroundLayer,
+    overlayLayer,
   ]);
 
   const capture = useCallback(
@@ -454,7 +485,7 @@ export function LivePreview({
         AbortSignal.timeout(100000),
       ]);
       signal.throwIfAborted();
-      if (!sourceReady || backgroundLoading || backgroundError || renderedBackgroundUrl !== backgroundUrl)
+      if (!sourceReady || sceneLoading || sceneError || !sceneRendered)
         throw new Error(
           "Please wait until the camera and background are ready.",
         );
@@ -465,7 +496,8 @@ export function LivePreview({
       capturingRef.current = true;
       const output = document.createElement("canvas");
       const composite = createBackgroundCompositor();
-      const backdrop = backgroundRef.current;
+      const backdrop = backgroundLayer.current.image;
+      const overlayImage = overlayLayer.current.image;
       let photo: ImageBitmap | null = null;
       const takePhoto = async () => {
         try {
@@ -481,7 +513,7 @@ export function LivePreview({
             await composite({
               source: photo, sourceWidth: photo.width, sourceHeight: photo.height,
               output, width: Math.min(2400, photo.width), settings: currentSettings,
-              background: backdrop, signal,
+              background: backdrop, overlay: overlayImage, signal,
             });
           } else {
             const source = sourceRef.current;
@@ -502,7 +534,7 @@ export function LivePreview({
             await composite({
               source, sourceWidth: size.width, sourceHeight: size.height,
               output, width: Math.min(2400, size.width), settings: currentSettings,
-              background: backdrop, signal,
+              background: backdrop, overlay: overlayImage, signal,
             });
           }
           signal.throwIfAborted();
@@ -557,17 +589,17 @@ export function LivePreview({
         setCanonTakingPhoto(false);
       }
     },
-    [sourceReady, backgroundLoading, backgroundError, renderedBackgroundUrl, backgroundUrl, beginCanonLiveView],
+    [sourceReady, sceneLoading, sceneError, sceneRendered, backgroundLayer, overlayLayer, beginCanonLiveView],
   );
 
-  const error = cameraError || backgroundError;
+  const error = cameraError || sceneError;
   useEffect(() => {
-    if (isCanon && error && (!autoConnectCanon || processingFailed || backgroundError)) {
+    if (isCanon && error && (!autoConnectCanon || processingFailed || sceneError)) {
       canonMayResumeRef.current = false;
       void canonLiveRef.current?.stop();
     }
-  }, [isCanon, error, autoConnectCanon, processingFailed, backgroundError]);
-  const ready = enabled && sourceReady && !backgroundLoading && !error && renderedBackgroundUrl === backgroundUrl &&
+  }, [isCanon, error, autoConnectCanon, processingFailed, sceneError]);
+  const ready = enabled && sourceReady && !sceneLoading && !error && sceneRendered &&
     (!isCanon || (canonLiveActive && !canonTakingPhoto));
   const waitingForCanonPreview = enabled && isCanon && !canonLiveActive && !canonStarting && !error &&
     !canonTakingPhoto;
@@ -680,7 +712,7 @@ export function LivePreview({
                 : loading
                   ? isCanon && canonReconnecting
                     ? "Reconnecting the camera…"
-                    : backgroundLoading && sourceReady
+                    : sceneLoading && sourceReady
                     ? "Setting the scene…"
                     : "Connecting your camera…"
                   : "Preview is paused"}
@@ -702,7 +734,8 @@ export function LivePreview({
                   type="button"
                   disabled={isCanon && (!allowCanonPreview || canonStarting)}
                   onClick={() => {
-                    if (isCanon && !processingFailed) startCanonLiveView();
+                    // A background or overlay that failed to load needs reloading, not a new camera session.
+                    if (isCanon && !processingFailed && !sceneError) startCanonLiveView();
                     else setRetry((value) => value + 1);
                   }}
                   style={{
@@ -718,7 +751,7 @@ export function LivePreview({
                     fontSize: 13,
                   }}
                 >
-                  <RefreshCw size={14} /> {isCanon ? processingFailed ? "Restart preview processing" : "Start live preview again" : "Try again"}
+                  <RefreshCw size={14} /> {isCanon && !sceneError ? processingFailed ? "Restart preview processing" : "Start live preview again" : "Try again"}
                 </button>
               </>
             )}

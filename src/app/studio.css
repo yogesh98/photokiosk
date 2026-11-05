@@ -1338,6 +1338,62 @@
   color: #afb9a0;
   margin-top: 15px;
 }
+/* Overlay cards and previews match the photo's 3:2 frame. */
+.overlay-image {
+  aspect-ratio: 3 / 2;
+  overflow: hidden;
+}
+.overlay-stack {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
+.overlay-stack > img,
+.overlay-checker {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* Photos stretch the overlay to fill the frame, so previews do too. */
+.overlay-stack > img.overlay-layer {
+  object-fit: fill;
+}
+.overlay-checker {
+  background-color: #f4f6ef;
+  background-image: conic-gradient(#e3e8da 25%, transparent 0 50%, #e3e8da 0 75%, transparent 0);
+  background-size: 18px 18px;
+}
+.upload-dropzone.has-overlay {
+  padding: 0;
+  min-height: 0;
+  border-style: solid;
+}
+.upload-dropzone.has-overlay > .overlay-stack {
+  aspect-ratio: 3 / 2;
+  height: auto;
+  margin: 0;
+}
+.overlay-ratio-warning {
+  display: flex;
+  gap: 9px;
+  align-items: flex-start;
+  margin: -10px 0 20px;
+  padding: 11px 13px;
+  border: 1px solid #efdfbf;
+  border-radius: 7px;
+  background: #fbf4e6;
+  color: #86672c;
+  font-size: 10px;
+  line-height: 1.55;
+}
+.overlay-ratio-warning > svg {
+  flex: none;
+  margin-top: 1px;
+}
 .chroma-panel {
   margin-top: 26px;
 }

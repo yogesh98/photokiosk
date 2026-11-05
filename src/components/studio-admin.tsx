@@ -18,6 +18,7 @@ import {
   Expand,
   ImagePlus,
   Images,
+  Layers,
   LayoutDashboard,
   Loader2,
   Mail,
@@ -34,10 +35,12 @@ import {
 import { LivePreview } from "@/components/kiosk/live-preview";
 import { BackgroundSequenceSettings } from "@/components/background-sequence-settings";
 import { BackblazeSettings } from "@/components/backblaze-settings";
+import { OverlayLibrary, OverlayUploadModal } from "@/components/overlay-settings";
 import { resolveSessionBackgrounds } from "@/lib/background-sequence";
 import {
   DEFAULT_SETTINGS,
   type Background,
+  type Overlay,
   type PhotoSession,
   type StudioData,
 } from "@/lib/kiosk-types";
@@ -57,11 +60,12 @@ import {
   UploadModal,
 } from "./studio-forms";
 
-type Tab = "overview" | "photos" | "backgrounds" | "camera" | "email" | "storage";
+type Tab = "overview" | "photos" | "backgrounds" | "overlays" | "camera" | "email" | "storage";
 const navItems = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "photos", label: "Photo gallery", icon: Images },
   { id: "backgrounds", label: "Backgrounds", icon: ImagePlus },
+  { id: "overlays", label: "Overlays", icon: Layers },
   { id: "camera", label: "Camera setup", icon: Camera },
   { id: "email", label: "Email delivery", icon: Mail },
   { id: "storage", label: "Backblaze B2", icon: CloudUpload },
@@ -71,6 +75,7 @@ export function StudioAdmin() {
   const [data, setData] = useState<StudioData>({
     settings: DEFAULT_SETTINGS,
     backgrounds: [],
+    overlays: [],
     sessions: [],
   });
   const [today, setToday] = useState("");
@@ -89,7 +94,7 @@ export function StudioAdmin() {
   const [cameraChecked, setCameraChecked] = useState(false);
   const [browserReady, setBrowserReady] = useState(false);
   const [modal, setModal] = useState<
-    "upload" | "preview" | "help" | "event" | null
+    "upload" | "overlay-upload" | "preview" | "help" | "event" | null
   >(null);
   const [selectedSession, setSelectedSession] = useState<PhotoSession | null>(
     null,
@@ -106,6 +111,9 @@ export function StudioAdmin() {
     { ...settings, backgroundMode: "green-screen" },
     data.backgrounds,
   )[0];
+  const activeOverlay = data.overlays.find(
+    (overlay) => overlay.id === settings.activeOverlayId,
+  );
   const cameraConnected =
     settings.camera.mode === "canon" ? camera.connected : browserReady;
   const sentSessions = data.sessions.filter(
@@ -217,6 +225,24 @@ export function StudioAdmin() {
       });
       await reload();
       notify("Background removed.");
+    } catch (e) {
+      notify((e as Error).message, "error");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function removeOverlay(item: Overlay) {
+    setBusy(true);
+    try {
+      await api(`/api/overlays?id=${encodeURIComponent(item.id)}`, {
+        method: "DELETE",
+      });
+      await reload();
+      notify(
+        item.id === settings.activeOverlayId
+          ? "Overlay removed. Photos no longer have an overlay."
+          : "Overlay removed.",
+      );
     } catch (e) {
       notify((e as Error).message, "error");
     } finally {
@@ -636,6 +662,15 @@ export function StudioAdmin() {
                           : "Original camera background",
                       good: settings.backgroundMode !== "off",
                     },
+                    {
+                      tab: "overlays" as Tab,
+                      icon: Layers,
+                      title: "Photo overlay",
+                      note: activeOverlay
+                        ? activeOverlay.name
+                        : "No overlay on photos",
+                      good: Boolean(activeOverlay),
+                    },
                   ].map((row) => (
                     <button
                       className="status-row"
@@ -932,8 +967,53 @@ export function StudioAdmin() {
                 key={JSON.stringify([settings.backgroundMode, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
                 settings={settings}
                 background={previewBackground}
+                overlay={activeOverlay}
                 busy={busy}
                 onSave={saveSettings}
+              />
+            </>
+          )}
+          {tab === "overlays" && (
+            <>
+              <PageHeading
+                eyebrow="THE FINISHING TOUCH"
+                title="Frame every memory."
+                description="Add a transparent frame, logo, or caption on top of every photo."
+                action={
+                  <button
+                    className="button dark"
+                    onClick={() => setModal("overlay-upload")}
+                  >
+                    <Plus size={17} />
+                    Upload an overlay
+                  </button>
+                }
+              />
+              <div className="background-info">
+                <Layers size={18} />
+                <span>
+                  The overlay sits on top of all three photos, with or without
+                  the green screen. Use a transparent PNG at 3:2, such as 3000 ×
+                  2000 pixels.
+                </span>
+                <button onClick={() => setModal("preview")}>
+                  Preview the magic
+                  <ArrowUpRight size={14} />
+                </button>
+              </div>
+              <OverlayLibrary
+                settings={settings}
+                overlays={data.overlays}
+                background={previewBackground}
+                busy={busy}
+                onSelect={(id) =>
+                  saveSettings(
+                    { activeOverlayId: id },
+                    id ? "Overlay is ready for your next session." : "Overlay turned off.",
+                  )
+                }
+                onDelete={removeOverlay}
+                onUpload={() => setModal("overlay-upload")}
               />
             </>
           )}
@@ -954,6 +1034,7 @@ export function StudioAdmin() {
                 key={JSON.stringify(settings.camera)}
                 settings={settings}
                 background={previewBackground}
+                overlay={activeOverlay}
                 camera={camera}
                 cameraChecked={cameraChecked}
                 busy={busy}
@@ -964,6 +1045,7 @@ export function StudioAdmin() {
                 key={JSON.stringify([settings.backgroundMode, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
                 settings={settings}
                 background={previewBackground}
+                overlay={activeOverlay}
                 busy={busy}
                 onSave={saveSettings}
               />
@@ -1034,6 +1116,20 @@ export function StudioAdmin() {
           }}
         />
       )}
+      {modal === "overlay-upload" && (
+        <OverlayUploadModal
+          background={previewBackground}
+          onClose={() => setModal(null)}
+          onSuccess={async (overlay) => {
+            setModal(null);
+            // A new overlay is usually meant for the next guest.
+            await saveSettings(
+              { activeOverlayId: overlay.id },
+              "Overlay added and ready for your next session.",
+            );
+          }}
+        />
+      )}
       {modal === "preview" && (
         <Modal
           title="A little preview of the magic"
@@ -1041,13 +1137,18 @@ export function StudioAdmin() {
           onClose={() => setModal(null)}
         >
           <div className="admin-preview">
-            <LivePreview settings={settings} background={previewBackground} />
+            <LivePreview
+              settings={settings}
+              background={previewBackground}
+              overlay={activeOverlay}
+            />
           </div>
           <div className="modal-footer">
             <span>
               {settings.backgroundMode === "off"
                 ? "Original camera background"
                 : `Photo 1: ${previewBackground?.name || "Selected scene"} · Green screen`}
+              {activeOverlay && ` · ${activeOverlay.name} overlay`}
             </span>
             <Link className="button dark" target="_blank" href="/kiosk">
               Launch kiosk

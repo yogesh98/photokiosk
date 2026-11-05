@@ -85,3 +85,43 @@ test("Off keeps the original image and never keys or draws the replacement backg
     assert.equal(output.width, 600);
   } finally { fixture.restore(); }
 });
+
+test("the overlay is drawn last over the whole photo and is never mirrored", async () => {
+  const fixture = canvasFixture();
+  try {
+    const composite = createBackgroundCompositor();
+    const output = fixture.makeCanvas();
+    const backdrop = { naturalWidth: 3000, naturalHeight: 2000 } as HTMLImageElement;
+    const overlay = { naturalWidth: 1920, naturalHeight: 1080 } as HTMLImageElement;
+    await composite({
+      source: {} as CanvasImageSource, sourceWidth: 1920, sourceHeight: 1080, width: 2400, output,
+      settings: { ...DEFAULT_SETTINGS, backgroundMode: "green-screen", camera: { ...DEFAULT_SETTINGS.camera, mirror: true } },
+      background: backdrop, overlay, signal: new AbortController().signal,
+    });
+    const last = fixture.operations.at(-1);
+    assert.equal(last?.action, "drawImage");
+    assert.equal(last?.canvas, 1, "the overlay is drawn on the output photo");
+    assert.deepEqual(last?.args, [overlay, 0, 0, 2400, 1600], "stretched to fill the 3:2 photo");
+    assert.ok(
+      !fixture.operations.some((item) => item.canvas === 1 && (item.action === "scale" || item.action === "translate")),
+      "only the camera image is mirrored",
+    );
+  } finally { fixture.restore(); }
+});
+
+test("the overlay is still applied when background replacement is off", async () => {
+  const fixture = canvasFixture();
+  try {
+    const composite = createBackgroundCompositor();
+    const output = fixture.makeCanvas();
+    const overlay = {} as HTMLImageElement;
+    await composite({
+      source: {} as CanvasImageSource, sourceWidth: 600, sourceHeight: 400, width: 600, output,
+      settings: { ...DEFAULT_SETTINGS, backgroundMode: "off" }, background: null, overlay,
+      signal: new AbortController().signal,
+    });
+    const draws = fixture.operations.filter((item) => item.canvas === 1 && item.action === "drawImage");
+    assert.equal(draws.length, 2, "the camera image, then the overlay");
+    assert.deepEqual(draws[1].args, [overlay, 0, 0, 600, 400]);
+  } finally { fixture.restore(); }
+});

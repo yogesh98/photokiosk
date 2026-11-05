@@ -7,8 +7,8 @@ import { spawnSync } from "node:child_process";
 import sharp from "sharp";
 import type { SendMailOptions } from "nodemailer";
 import {
-  addBackground, assertLocalRequest, beginSessionEmail, createSession, deleteBackground,
-  getSettings, readMedia, readStudio, StudioError, updateSettings, validateEmail,
+  addBackground, addOverlay, assertLocalRequest, beginSessionEmail, createSession, deleteBackground,
+  deleteOverlay, getSettings, readMedia, readStudio, StudioError, updateSettings, validateEmail,
 } from "./studio-store";
 import { sendSessionEmail, sendTestEmail } from "./email";
 import { GET as studioGET } from "../app/api/studio/route";
@@ -16,10 +16,12 @@ import { GET as kioskGET } from "../app/api/kiosk/route";
 import { PATCH as settingsPATCH } from "../app/api/settings/route";
 import { POST as sessionPOST } from "../app/api/sessions/route";
 import { GET as mediaGET } from "../app/api/media/[...path]/route";
+import { DELETE as overlaysDELETE, POST as overlaysPOST } from "../app/api/overlays/route";
 
 let suiteDirectory: string;
 let photo: string;
 let fixture: Buffer;
+let transparentOverlay: Buffer;
 let fixtureNumber = 0;
 const originalDirectory = process.env.PHOTO_KIOSK_DATA_DIR;
 async function isolated() {
@@ -38,6 +40,7 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     suiteDirectory = await mkdtemp(path.join(tmpdir(), "photo-kiosk-tests-"));
     fixture = await sharp({ create: { width: 24, height: 16, channels: 3, background: "#45a29e" } }).png().toBuffer();
     photo = `data:image/png;base64,${fixture.toString("base64")}`;
+    transparentOverlay = await sharp({ create: { width: 30, height: 20, channels: 4, background: { r: 255, g: 200, b: 0, alpha: 0.5 } } }).png().toBuffer();
   });
   after(async () => {
     if (originalDirectory === undefined) delete process.env.PHOTO_KIOSK_DATA_DIR;
@@ -403,6 +406,112 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     for (const parts of [["..", "studio.json"], ["credentials.json"], ["backgrounds", "../../studio.json"]]) await assert.rejects(readMedia(parts), /not found/);
   });
 
+  test("starts without an overlay and migrates older booths to no overlay without losing data", async () => {
+    const directory = await isolated();
+    const fresh = await readStudio();
+    assert.deepEqual(fresh.overlays, []);
+    assert.equal(fresh.settings.activeOverlayId, "");
+    await updateSettings({ eventName: "Before overlays" });
+    await createSession(sessionInput());
+    const filename = path.join(directory, "studio.json");
+    const legacy = JSON.parse(await readFile(filename, "utf8"));
+    delete legacy.overlays;
+    delete legacy.settings.activeOverlayId;
+    await writeFile(filename, JSON.stringify(legacy));
+    const migrated = await readStudio();
+    assert.deepEqual(migrated.overlays, []);
+    assert.equal(migrated.settings.activeOverlayId, "");
+    assert.equal(migrated.settings.eventName, "Before overlays");
+    assert.equal(migrated.sessions.length, 1);
+    assert.deepEqual(JSON.parse(await readFile(filename, "utf8")), {
+      ...legacy, overlays: [], settings: { ...legacy.settings, activeOverlayId: "" },
+    });
+  });
+
+  test("preserves saved data with a malformed overlay library for recovery", async () => {
+    const directory = await isolated();
+    const filename = path.join(directory, "studio.json");
+    const saved = JSON.parse(await readFile(filename, "utf8"));
+    const corrupt = JSON.stringify({ ...saved, overlays: "not a list" });
+    await writeFile(filename, corrupt);
+    await assert.rejects(readStudio(), (error: unknown) => error instanceof StudioError && error.status === 500);
+    assert.equal(await readFile(filename, "utf8"), corrupt);
+  });
+
+  test("stores transparent overlays as PNG and rejects images that would cover the whole photo", async () => {
+    await isolated();
+    const upload = (bytes: Uint8Array, name: string, type: string) => new File([new Uint8Array(bytes)], name, { type });
+    const jpeg = await sharp({ create: { width: 30, height: 20, channels: 3, background: "#ffffff" } }).jpeg().toBuffer();
+    const opaqueWithAlpha = await sharp({ create: { width: 30, height: 20, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 1 } } }).png().toBuffer();
+    await assert.rejects(addOverlay(upload(jpeg, "frame.jpg", "image/jpeg"), "JPEG"), /JPEGs cannot be transparent/);
+    await assert.rejects(addOverlay(upload(fixture, "flat.png", "image/png"), "Flat"), /no transparent areas/);
+    await assert.rejects(addOverlay(upload(opaqueWithAlpha, "opaque.png", "image/png"), "Opaque"), /no transparent areas/);
+    await assert.rejects(addOverlay(upload(new TextEncoder().encode("pretend"), "fake.png", "image/png"), "Fake"), /could not be read/);
+    await assert.rejects(addOverlay(upload(transparentOverlay, "frame.png", "image/png"), "  "), /Overlay name is invalid/);
+    assert.deepEqual((await readStudio()).overlays, [], "rejected uploads are not saved");
+
+    const overlay = await addOverlay(upload(transparentOverlay, "frame.png", "image/png"), "Party frame");
+    assert.match(overlay.url, /^\/api\/media\/overlays\/[0-9a-f-]{36}\.png$/);
+    const parts = overlay.url.replace("/api/media/", "").split("/");
+    const metadata = await sharp(await readMedia(parts)).metadata();
+    assert.equal(metadata.format, "png");
+    assert.equal(metadata.hasAlpha, true, "transparency survives normalization");
+    assert.equal(metadata.width, 30);
+    const media = await mediaGET(request(overlay.url), { params: Promise.resolve({ path: parts }) });
+    assert.equal(media.status, 200);
+    assert.equal(media.headers.get("content-type"), "image/png");
+    assert.deepEqual((await readStudio()).overlays, [overlay]);
+    const guest = await (await kioskGET(request("/api/kiosk"))).json();
+    assert.deepEqual(guest.overlays, [overlay]);
+    for (const bad of [["overlays", `${overlay.id}.jpg`], ["overlays", "../studio.json"], ["backgrounds", `${overlay.id}.png`]])
+      await assert.rejects(readMedia(bad), /not found/);
+  });
+
+  test("selects, validates, and clears the active overlay, including when it is deleted", async () => {
+    await isolated();
+    const file = () => new File([new Uint8Array(transparentOverlay)], "frame.png", { type: "image/png" });
+    const first = await addOverlay(file(), "First frame");
+    const second = await addOverlay(file(), "Second frame");
+    assert.equal((await updateSettings({ activeOverlayId: first.id })).activeOverlayId, first.id);
+    await assert.rejects(updateSettings({ eventName: "Not saved", activeOverlayId: "missing" }), /existing overlay/);
+    await assert.rejects(updateSettings({ activeOverlayId: 7 }), /Overlay is invalid/);
+    const unchanged = await getSettings();
+    assert.equal(unchanged.activeOverlayId, first.id);
+    assert.equal(unchanged.eventName, "The good times", "a rejected patch saves nothing");
+    assert.equal((await updateSettings({ activeOverlayId: "" })).activeOverlayId, "", "an empty ID turns the overlay off");
+
+    await updateSettings({ activeOverlayId: second.id });
+    const keptActive = await deleteOverlay(first.id);
+    assert.equal(keptActive.settings.activeOverlayId, second.id, "deleting another overlay keeps the active one");
+    const cleared = await deleteOverlay(second.id);
+    assert.equal(cleared.settings.activeOverlayId, "");
+    assert.deepEqual((await readStudio()).overlays, []);
+    await assert.rejects(readMedia(second.url.replace("/api/media/", "").split("/")), /not found/);
+    await assert.rejects(deleteOverlay(second.id), (error: unknown) => error instanceof StudioError && error.status === 404);
+  });
+
+  test("overlay HTTP handlers upload, delete, and reject cross-origin requests", async () => {
+    await isolated();
+    const form = () => {
+      const body = new FormData();
+      body.set("file", new File([new Uint8Array(transparentOverlay)], "corner-logo.png", { type: "image/png" }));
+      return body;
+    };
+    const created = await overlaysPOST(request("/api/overlays", { method: "POST", body: form() }));
+    assert.equal(created.status, 201);
+    const { overlay } = await created.json();
+    assert.equal(overlay.name, "corner-logo", "the file name is the default overlay name");
+    const denied = await overlaysPOST(request("/api/overlays", { method: "POST", body: form(), headers: { origin: "https://evil.example.com" } }));
+    assert.equal(denied.status, 403);
+    const missing = await overlaysPOST(request("/api/overlays", { method: "POST", body: new FormData() }));
+    assert.equal(missing.status, 400);
+    const deleted = await overlaysDELETE(request(`/api/overlays?id=${overlay.id}`, { method: "DELETE" }));
+    assert.equal(deleted.status, 200);
+    assert.deepEqual((await readStudio()).overlays, []);
+    const noId = await overlaysDELETE(request("/api/overlays", { method: "DELETE" }));
+    assert.equal(noId.status, 400);
+  });
+
   test("requires exactly three decoded photos and serializes simultaneous writes without losing sessions", async () => {
     await isolated();
     await assert.rejects(createSession({ photos: [photo], backgroundName: "Coast" }), /exactly three/);
@@ -665,7 +774,7 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     assert.equal(guest.headers.get("cache-control"), "no-store");
     const serialized = await guest.text();
     const payload = JSON.parse(serialized);
-    assert.deepEqual(Object.keys(payload).sort(), ["backgrounds", "settings"]);
+    assert.deepEqual(Object.keys(payload).sort(), ["backgrounds", "overlays", "settings"]);
     assert.equal(payload.settings.gmail.configured, true);
     for (const key of ["email", "senderName", "subject", "message"]) assert.equal(payload.settings.gmail[key], "");
     assert.equal(payload.backgrounds.length, 6);

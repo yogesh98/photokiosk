@@ -3,7 +3,7 @@ import { apiError, assertLocalRequest, readStudio } from "@/lib/studio-store";
 export async function GET(request: Request) {
   try {
     assertLocalRequest(request);
-    const { settings, backgrounds } = await readStudio();
+    const { settings, backgrounds, overlays } = await readStudio();
     return Response.json(
       {
         settings: {
@@ -23,6 +23,7 @@ export async function GET(request: Request) {
           },
         },
         backgrounds,
+        overlays,
       },
       { headers: { "Cache-Control": "no-store" } },
     );

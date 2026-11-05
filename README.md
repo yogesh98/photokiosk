@@ -2,7 +2,7 @@
 
 A local photo booth with green-screen background replacement and a USB camera. Built with Next.js 16, React, and TypeScript.
 
-- **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, background replacement, camera settings, Backblaze B2 sharing, Gmail, and the gallery with recipients and delivery history.
+- **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, photo overlays, background replacement, camera settings, Backblaze B2 sharing, Gmail, and the gallery with recipients and delivery history.
 - **Kiosk:** [http://127.0.0.1:3000/kiosk](http://127.0.0.1:3000/kiosk). Camera preview with background replacement, a five-second countdown, three photos with three-second intervals, review/retake, and optional QR sharing and email delivery after capture.
 
 ## Run
@@ -83,8 +83,9 @@ After restarting the Mac, log in to the **kiosk** user. The touch service automa
 1. In **Camera setup**, choose a webcam or **Canon tethering**. Save the selection, then open the preview. A webcam needs browser camera permission on localhost. For Canon, press **Start live preview** in Admin. The kiosk connects automatically on startup and between guests.
 2. Choose one of six built-in backgrounds, or upload a JPEG, PNG, or WebP up to 10 MB. Under **Backgrounds for each photo**, keep the **Same background**, **Rotate backgrounds** through the library starting with the active scene, or **Choose per photo** to assign scenes to photos 1, 2, and 3. Save the photo backgrounds to apply the plan to the next session.
 3. Under **Background replacement**, choose **Green screen** or **Off**. Green screen uses a physical green backdrop and offers color similarity, edge softness, and spill reduction controls. Off keeps the camera's original scene. Open the live preview to check the result, then **Save adjustments** to apply it to the kiosk.
-4. Optionally configure **Backblaze B2** for QR sharing using the instructions below. In **Email delivery**, optionally enter the sender address, display name, and a Google app password. Customize the subject/message, save, then send a test to an address you control.
-5. Launch the kiosk. Guests have five seconds before photo one, then three seconds between each remaining photo. Photos are saved locally before sharing starts. B2 uploads run automatically when enabled; email entry appears when Gmail is configured. Guests can use both when both are configured. The kiosk provides QR and email delivery without gallery navigation links or local download buttons. When neither is configured, guests can ask the host for a copy.
+4. Optionally, in **Overlays**, upload a frame, logo, or caption as a PNG or WebP with a transparent background, up to 10 MB. Uploading selects it; click a card to switch overlays, or choose **No overlay** to turn it off. The overlay is drawn on top of all three photos, with or without the green screen, and appears in every live preview so guests can pose inside the frame. It is stretched to fill each 3:2 photo, so export it at 3:2 (for example 3000 × 2000 pixels); the upload dialog warns when an image has a different shape. JPEGs and images without transparent areas are rejected because they would cover the whole photo. Deleting the active overlay turns overlays off.
+5. Optionally configure **Backblaze B2** for QR sharing using the instructions below. In **Email delivery**, optionally enter the sender address, display name, and a Google app password. Customize the subject/message, save, then send a test to an address you control.
+6. Launch the kiosk. Guests have five seconds before photo one, then three seconds between each remaining photo. Photos are saved locally before sharing starts. B2 uploads run automatically when enabled; email entry appears when Gmail is configured. Guests can use both when both are configured. The kiosk provides QR and email delivery without gallery navigation links or local download buttons. When neither is configured, guests can ask the host for a copy.
 
 The admin refreshes on focus and the gallery has a refresh button. The kiosk picks up saved settings between guests, polling every 15 seconds while idle. A reset waits for fresh settings before enabling another session. Start a fresh session to apply changes made during capture.
 
@@ -181,7 +182,7 @@ The local server needs internet access to upload. Once uploaded, the gallery rem
 
 ## Local data
 
-`.data/` contains the studio settings, normalized background uploads, captured JPEGs, recipient addresses, B2 sharing status/URLs, and server-side Gmail and B2 secrets. It is excluded from Git and build tracing. The app creates directories with mode `0700` and files with mode `0600`; secrets are stored locally and are never returned by an API. Back up this folder if you need to preserve your event. Do not share it or commit it. Enabling B2 also creates the public cloud copies described above.
+`.data/` contains the studio settings, normalized background uploads, transparent overlay PNGs, captured JPEGs, recipient addresses, B2 sharing status/URLs, and server-side Gmail and B2 secrets. It is excluded from Git and build tracing. The app creates directories with mode `0700` and files with mode `0600`; secrets are stored locally and are never returned by an API. Back up this folder if you need to preserve your event. Do not share it or commit it. Enabling B2 also creates the public cloud copies described above.
 
 All API routes accept localhost and IPv4 addresses currently assigned to the booth computer, and reject unrelated hostnames and cross-origin browser requests. Admin is accessible to devices on the same trusted network and has no login or multi-operator coordination. Guest configuration responses exclude gallery photos, recipients, delivery history, and sender settings. Keep access on a trusted network or VPN.
 

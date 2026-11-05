@@ -33,6 +33,7 @@ import type {
   Background,
   BackgroundMode,
   KioskSettings,
+  Overlay,
   PhotoSession,
 } from "@/lib/kiosk-types";
 import {
@@ -64,11 +65,13 @@ const BACKGROUND_OPTIONS: Array<{
 export function ChromaSettings({
   settings,
   background,
+  overlay,
   busy,
   onSave,
 }: {
   settings: KioskSettings;
   background?: Background;
+  overlay?: Overlay;
   busy: boolean;
   onSave: SaveSettings;
 }) {
@@ -126,6 +129,7 @@ export function ChromaSettings({
           <LivePreview
             settings={{ ...settings, backgroundMode, chroma: draftChroma }}
             background={backgroundMode === "off" ? undefined : background}
+            overlay={overlay}
           />
           <p>Preview your changes, then save when the scene looks right.</p>
         </div>
@@ -206,6 +210,7 @@ export function ChromaSettings({
 export function CameraSettings({
   settings,
   background,
+  overlay,
   camera,
   cameraChecked,
   busy,
@@ -214,6 +219,7 @@ export function CameraSettings({
 }: {
   settings: KioskSettings;
   background?: Background;
+  overlay?: Overlay;
   camera: CameraState;
   cameraChecked: boolean;
   busy: boolean;
@@ -463,6 +469,7 @@ export function CameraSettings({
               key={JSON.stringify(draft)}
               settings={{ ...settings, camera: draft }}
               background={background}
+              overlay={overlay}
               onStatusChange={previewStatus}
             />
           ) : (

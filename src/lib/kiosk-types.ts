@@ -9,6 +9,8 @@ export interface BackgroundSequence {
 export interface KioskSettings {
   eventName: string;
   activeBackgroundId: string;
+  /** The overlay drawn on top of every photo, or "" for none. */
+  activeOverlayId: string;
   backgroundMode: BackgroundMode;
   backgroundSequence: BackgroundSequence;
   camera: {
@@ -47,6 +49,13 @@ export interface Background {
   category: string;
   createdAt: string;
 }
+/** A transparent PNG drawn over the whole photo, stretched to its 3:2 frame. */
+export interface Overlay {
+  id: string;
+  name: string;
+  url: string;
+  createdAt: string;
+}
 export interface PhotoSession {
   id: string;
   createdAt: string;
@@ -72,11 +81,13 @@ export interface PhotoSession {
 export interface StudioData {
   settings: KioskSettings;
   backgrounds: Background[];
+  overlays: Overlay[];
   sessions: PhotoSession[];
 }
 export const DEFAULT_SETTINGS: KioskSettings = {
   eventName: "The good times",
   activeBackgroundId: "coast",
+  activeOverlayId: "",
   backgroundMode: "green-screen",
   backgroundSequence: { mode: "single", photoIds: ["coast", "coast", "coast"] },
   camera: {
