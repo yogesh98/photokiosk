@@ -10,6 +10,27 @@ export class CameraError extends Error {
   }
 }
 
+export type GphotoFailureKind = "busy" | "timeout" | "io" | "other";
+
+/**
+ * Classify gphoto2 diagnostics for still commands and the live stream alike.
+ * USB ownership problems take priority over the timeouts they often cause:
+ * another app's claim must never trigger a USB reset.
+ */
+export function classifyGphotoFailure(diagnostic: string): GphotoFailureKind {
+  if (
+    /could not\s+(?:claim\b|detach\s+(?:the\s+)?kernel\s+driver)|claim[^\r\n]*(?:USB|device|interface)|detach[^\r\n]*kernel|(?:camera|device)[^\r\n]*busy|PTP[^\r\n]*busy/i.test(
+      diagnostic,
+    )
+  )
+    return "busy";
+  if (/PTP[^\r\n]*(?:timeout|timed out)|(?:timeout|timed out)[^\r\n]*(?:reading|writing|port)/i.test(diagnostic))
+    return "timeout";
+  if (/PTP[^\r\n]*I\/O|I\/O problem|Error (?:reading|writing) from the port/i.test(diagnostic))
+    return "io";
+  return "other";
+}
+
 export function recognizedCameraError(error: unknown): CameraError | null {
   if (error instanceof CameraError) return error;
   // Dev reloads can leave the global controller holding an older CameraError

@@ -286,6 +286,46 @@ test("stream exit preserves bounded useful errors and requires an explicit new s
   assert.equal(fixture.commands.length, 1);
 });
 
+test("a corrupt live stream is a retryable transport failure, not a bad request", async () => {
+  const fixture = fakeLive();
+  const session = await fixture.controller.startLive();
+  // A second start-of-image inside a frame's headers is malformed framing.
+  fixture.children[0].stdout.write(Buffer.from([0xff, 0xd8, 0xff, 0xd8]));
+  await delay(0);
+  assert.throws(() => fixture.controller.liveFrame(session.id), (error) => {
+    assert.equal(error.code, "invalid_camera_image");
+    assert.equal(error.status, 503, "Clients retry 5xx live-view failures automatically");
+    return true;
+  });
+  assert.equal(fixture.children[0].ended, true);
+  assert.throws(() => new JpegFrameParser(() => {}, 32).push(Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xda, 0, 2]), Buffer.alloc(40)])), { status: 503 });
+});
+
+test("live-stream USB timeouts use the still-command classifier and reset the port", async () => {
+  const calls = [];
+  const children = [];
+  const controller = new CameraController(async (args) => {
+    calls.push([...args]);
+    return { stdout: args.includes("--auto-detect") ? detection : "", stderr: "" };
+  }, {
+    factory: () => {
+      const child = new FakeChild();
+      children.push(child);
+      queueMicrotask(() => child.stdout.write(jpeg));
+      return child;
+    },
+  });
+  const old = await controller.startLive();
+  children[0].stderr.write("*** Error ***\nPTP request timed out\n");
+  children[0].close(1);
+  await delay(0);
+  assert.throws(() => controller.liveFrame(old.id), { code: "camera_timeout", status: 504 });
+  const current = await controller.startLive();
+  try {
+    assert.equal(calls.filter((args) => args.includes("--reset")).length, 1);
+  } finally { await controller.stopLive(current.id); }
+});
+
 test("owned stream shutdown escalates only after graceful signals fail", async () => {
   const child = new FakeChild(false);
   const stream = new GphotoLiveView([], () => child, { stopGraceMs: 10, killGraceMs: 10 });

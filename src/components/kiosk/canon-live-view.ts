@@ -3,7 +3,8 @@ import { abortableDelay } from "./capture-sequence";
 type LiveViewOptions = {
   request?: typeof fetch;
   onFrame: (frame: Blob, signal: AbortSignal) => Promise<void> | void;
-  onError: (error: unknown) => void;
+  /** `retrying` is true only when automatic recovery will start a new session. */
+  onError: (error: unknown, state: { retrying: boolean }) => void;
   wait?: (signal: AbortSignal) => Promise<void>;
   reconnect?: {
     allowed: () => boolean;
@@ -92,7 +93,7 @@ export function createCanonLiveView({ request = fetch, onFrame, onError, wait = 
             retry = !current.signal.aborted && retryable &&
               (!(error instanceof LiveViewRequestError) || error.retryable) && Boolean(reconnect?.allowed());
             if (!retry) rejectReady(error);
-            if (!current.signal.aborted) onError(error);
+            if (!current.signal.aborted) onError(error, { retrying: retry });
           } finally {
             if (id) {
               try {
@@ -114,7 +115,7 @@ export function createCanonLiveView({ request = fetch, onFrame, onError, wait = 
         }
       } catch (error) {
         rejectReady(error);
-        if (!current.signal.aborted) onError(error);
+        if (!current.signal.aborted) onError(error, { retrying: false });
       } finally {
         rejectReady(current.signal.reason || new Error("Canon live preview ended before it was ready."));
         signal?.removeEventListener("abort", abort);

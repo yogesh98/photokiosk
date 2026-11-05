@@ -66,6 +66,29 @@ test("kiosk recovery waits through server startup and acquires a new ID after a 
   assert.ok(calls.every(({ method }) => ["POST", "GET", "DELETE"].includes(method)));
 });
 
+test("errors report whether automatic recovery will actually reconnect", { timeout: 2000 }, async () => {
+  for (const [name, status, reconnect, retrying] of [
+    ["retryable with recovery", 503, true, [true, false]],
+    ["non-retryable request", 400, true, [false]],
+    ["retryable without recovery", 503, false, [false]],
+  ]) {
+    const states = [];
+    let starts = 0;
+    const preview = createCanonLiveView({
+      request: async () => {
+        starts++;
+        // The second attempt fails differently so the loop always ends.
+        return Response.json({ error: "SYNTHETIC USB fault" }, { status: starts === 1 ? status : 400 });
+      },
+      onFrame: () => assert.fail("No camera is available"),
+      onError: (_error, state) => states.push(state.retrying),
+      reconnect: reconnect ? { allowed: () => true, wait: async () => {} } : undefined,
+    });
+    await preview.start();
+    assert.deepEqual(states, retrying, name);
+  }
+});
+
 test("stopping during reconnect backoff cancels all later attempts", { timeout: 2000 }, async () => {
   const retrying = deferred();
   let starts = 0;

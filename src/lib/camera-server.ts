@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { CameraError, recognizedCameraError } from "./camera-errors";
+import { CameraError, classifyGphotoFailure, recognizedCameraError } from "./camera-errors";
 import { GphotoLiveView, type LiveGphotoFactory, type LiveViewOptions } from "./camera-live";
 export { CameraError } from "./camera-errors";
 import { mkdtemp, readdir, readFile, rm, stat } from "node:fs/promises";
@@ -164,24 +164,18 @@ export function runGphoto(
       if (code !== 0) {
         const diagnostic = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
         const detail = diagnostic.slice(0, 1500);
-        const busy =
-          /could not\s+(?:claim\b|detach\s+(?:the\s+)?kernel\s+driver)|claim[^\r\n]*(?:USB|device|interface)|(?:camera|device)[^\r\n]*busy|PTP[^\r\n]*busy/i.test(
-            diagnostic,
-          );
-        const timedOut =
-          /PTP[^\r\n]*(?:timeout|timed out)|(?:timeout|timed out)[^\r\n]*(?:reading|writing|port)/i.test(diagnostic);
-        const ioFailure = /PTP[^\r\n]*I\/O|I\/O problem|Error (?:reading|writing) from the port/i.test(diagnostic);
+        const kind = classifyGphotoFailure(diagnostic);
         return reject(
           new CameraError(
-            busy
+            kind === "busy"
               ? "Another app or the macOS camera import helper may be using the camera. Close Photos, Preview, Image Capture, and EOS Utility, then reconnect the camera."
-              : timedOut
+              : kind === "timeout"
                 ? "The camera timed out while communicating over USB. Wake the camera, check its USB cable, then reconnect it and try again."
-                : ioFailure
+                : kind === "io"
                   ? "The camera's USB connection needs to be recovered. The kiosk will reset the connection and try again."
                 : "The camera command failed. Check the camera and its settings, then try again.",
-            busy ? "camera_in_use" : timedOut ? "camera_timeout" : ioFailure ? "camera_io" : "camera_command",
-            !busy && timedOut ? 504 : 503,
+            kind === "busy" ? "camera_in_use" : kind === "timeout" ? "camera_timeout" : kind === "io" ? "camera_io" : "camera_command",
+            kind === "timeout" ? 504 : 503,
             detail || CONNECT_HELP,
           ),
         );

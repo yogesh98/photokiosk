@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { Readable } from "node:stream";
-import { CameraError } from "./camera-errors";
+import { CameraError, classifyGphotoFailure } from "./camera-errors";
 
 type LiveChild = Pick<ChildProcess, "kill" | "once"> & { stdout: Readable; stderr: Readable };
 export type LiveGphotoFactory = (args: readonly string[]) => LiveChild;
@@ -86,8 +86,10 @@ export class JpegFrameParser {
   }
 
   clear() { this.buffer = Buffer.alloc(0); }
-  private invalid() { return new CameraError("The camera returned a malformed live preview frame. Stop and start live preview to retry.", "invalid_camera_image", 422); }
-  private tooLarge() { return new CameraError("The camera live preview frame exceeded the size limit.", "invalid_camera_image", 422); }
+  // A corrupt stream is a transport fault, not a bad client request: report a
+  // retryable status so the kiosk starts a fresh stream instead of stalling.
+  private invalid() { return new CameraError("The camera returned a malformed live preview frame.", "invalid_camera_image", 503); }
+  private tooLarge() { return new CameraError("The camera live preview frame exceeded the size limit.", "invalid_camera_image", 503); }
 }
 
 export interface LiveViewOptions {
@@ -146,7 +148,7 @@ export class GphotoLiveView {
     this.child.stdout.on("data", (bytes: Buffer) => {
       if (this.stopping || this.ended) return;
       try { parser.push(bytes); }
-      catch (error) { void this.stop(error instanceof CameraError ? error : new CameraError("The live preview could not be decoded.", "invalid_camera_image", 422)); }
+      catch (error) { void this.stop(error instanceof CameraError ? error : new CameraError("The live preview could not be decoded.", "invalid_camera_image", 503)); }
     });
     this.child.stderr.on("data", (bytes: Buffer) => {
       this.stderr = Buffer.concat([this.stderr, bytes]).subarray(-8192);
@@ -160,10 +162,10 @@ export class GphotoLiveView {
       this.ended = true;
       if (!this.stopping && !this.failure) {
         const detail = this.stderr.toString("utf8").trim().slice(-1500);
-        const busy = /claim[^\r\n]*(?:USB|device|interface)|detach[^\r\n]*kernel|(?:camera|device)[^\r\n]*busy/i.test(detail);
-        const timedOut = /PTP[^\r\n]*timeout|timeout[^\r\n]*(?:reading|writing|port)/i.test(detail);
-        const ioFailure = /PTP[^\r\n]*I\/O|I\/O problem|Error (?:reading|writing) from the port/i.test(detail);
-        this.failure = new CameraError(busy ? "Another app or the macOS camera import helper may be using the camera. Close Photos, Preview, Image Capture, and EOS Utility, then reconnect it." : timedOut ? "Canon live preview timed out over USB. Wake the camera and check its cable." : ioFailure ? "The camera's USB connection needs to be recovered. The kiosk will reset the connection and try again." : "Canon live preview ended. Start preview again to retry.", busy ? "camera_in_use" : timedOut ? "camera_timeout" : ioFailure ? "camera_io" : "camera_command", timedOut && !busy ? 504 : 503, detail || undefined);
+        // Use the still-command classifier so every USB timeout or I/O failure
+        // reported by the stream also triggers the same port recovery.
+        const kind = classifyGphotoFailure(detail);
+        this.failure = new CameraError(kind === "busy" ? "Another app or the macOS camera import helper may be using the camera. Close Photos, Preview, Image Capture, and EOS Utility, then reconnect it." : kind === "timeout" ? "Canon live preview timed out over USB. Wake the camera and check its cable." : kind === "io" ? "The camera's USB connection needs to be recovered. The kiosk will reset the connection and try again." : "Canon live preview ended. Start preview again to retry.", kind === "busy" ? "camera_in_use" : kind === "timeout" ? "camera_timeout" : kind === "io" ? "camera_io" : "camera_command", kind === "timeout" ? 504 : 503, detail || undefined);
       }
       clearTimeout(this.startupTimer);
       clearTimeout(this.frameTimer);

@@ -106,6 +106,8 @@ export function LivePreview({
   const [processingFailed, setProcessingFailed] = useState(false);
   const [canonLiveActive, setCanonLiveActive] = useState(false);
   const [canonTakingPhoto, setCanonTakingPhoto] = useState(false);
+  // The reason for an interruption that automatic recovery is retrying.
+  const [canonReconnecting, setCanonReconnecting] = useState<string | null>(null);
   const backgroundUrl = settings.backgroundMode === "off" ? undefined : background?.url;
   const backgroundError =
     backgroundStatus.url === backgroundUrl ? backgroundStatus.error : null;
@@ -130,13 +132,17 @@ export function LivePreview({
   const isCanon = settings.camera.mode === "canon";
 
   useEffect(() => {
-    canonAutoConnectRef.current = autoConnectCanon && enabled && isCanon && allowCanonPreview &&
+    // allowCanonPreview only locks the guest-facing buttons. A guest's photo
+    // session still recovers a dropped stream during its countdowns; the
+    // shutter itself is protected by capturingRef.
+    canonAutoConnectRef.current = autoConnectCanon && enabled && isCanon &&
       !processingFailed && !backgroundError;
-  }, [autoConnectCanon, enabled, isCanon, allowCanonPreview, processingFailed, backgroundError]);
+  }, [autoConnectCanon, enabled, isCanon, processingFailed, backgroundError]);
 
   const beginCanonLiveView = useCallback((live: ReturnType<typeof createCanonLiveView>, signal?: AbortSignal) => {
     setCanonStarting(true);
     setCanonLiveActive(true);
+    setCanonReconnecting(null);
     setCameraError(null);
     setCameraReady(false);
     const flight = live.start(signal);
@@ -146,6 +152,7 @@ export function LivePreview({
         previewFlightRef.current = null;
         setCanonStarting(false);
         setCanonLiveActive(false);
+        setCanonReconnecting(null);
       }
     });
     return flight;
@@ -169,10 +176,12 @@ export function LivePreview({
     setHasCanonFrame(false);
     setCameraReady(false);
     setCanonLiveActive(false);
+    setCanonReconnecting(null);
   }
 
-  // The kiosk connects on startup and recovers while idle. Admin previews keep
-  // their explicit start button, and photo sequences own their shutter pauses.
+  // The kiosk connects on startup and recovers while idle and during guest
+  // countdowns. Admin previews keep their explicit start button, and photo
+  // sequences own their shutter pauses.
   useEffect(() => {
     let current = true;
     canonMayResumeRef.current = false;
@@ -182,6 +191,7 @@ export function LivePreview({
         setHasCanonFrame(false);
         setCanonStarting(false);
         setCanonLiveActive(false);
+        setCanonReconnecting(null);
       }
     });
     if (!enabled || !isCanon) return () => { current = false; };
@@ -200,15 +210,23 @@ export function LivePreview({
         previous?.close();
         setHasCanonFrame(true);
         setCanonStarting(false);
+        setCanonReconnecting(null);
         setCameraError(null);
       },
-      onError: (error) => {
+      onError: (error, { retrying }) => {
         if (!current) return;
         canonMayResumeRef.current = mayAutoConnect();
         sourceRef.current = null;
         setCameraReady(false);
         setCanonStarting(false);
-        setCameraError(readableCameraError(error) + (mayAutoConnect() ? " Reconnecting automatically…" : ""));
+        if (retrying) {
+          // A recoverable USB or server interruption is a loading state. As an
+          // error it would end a guest's session before recovery could finish.
+          setCanonReconnecting(readableCameraError(error));
+        } else {
+          setCanonReconnecting(null);
+          setCameraError(readableCameraError(error));
+        }
       },
     });
     canonLiveRef.current = live;
@@ -346,9 +364,10 @@ export function LivePreview({
     sourceSizeRef.current = retained ? { width: retained.width, height: retained.height } : { width: 0, height: 0 };
     queueMicrotask(() => {
       if (!controller.signal.aborted) {
+        // Canon transport state belongs to the live-view effect. Resetting it
+        // here ran after the kiosk's automatic start and hid "Starting…".
         setCameraReady(false);
         setCameraError(null);
-        setCanonStarting(false);
         setProcessingFailed(false);
         performanceCallbackRef.current?.(null);
         runtimeCallbackRef.current?.(null);
@@ -610,9 +629,15 @@ export function LivePreview({
             beginCanonLiveView(live, signal);
           },
           waitUntilReady: async (signal) => {
-            await live.whenReady();
-            for (let elapsed = 0; elapsed < (generalForeground ? 100000 : 30000); elapsed += 25) {
+            // Readiness stays pending while automatic recovery reconnects, so
+            // one deadline covers the whole resume rather than each attempt.
+            let failed = false;
+            let failure: unknown;
+            void live.whenReady().catch((error) => { failed = true; failure = error; });
+            const deadline = Date.now() + (generalForeground ? 100000 : 30000);
+            while (Date.now() < deadline) {
               signal.throwIfAborted();
+              if (failed) throw failure;
               if (!isCurrent()) throw new DOMException("The photo session is no longer active.", "AbortError");
               if (renderedCanonFrameRef.current >= minimumFrameVersion) return;
               await abortableDelay(25, signal);
@@ -766,7 +791,9 @@ export function LivePreview({
                 : waitingForCanonPreview
                   ? "Canon live preview is paused"
                 : loading
-                  ? backgroundLoading && sourceReady
+                  ? isCanon && canonReconnecting
+                    ? "Reconnecting the camera…"
+                    : backgroundLoading && sourceReady
                     ? "Setting the scene…"
                     : settings.backgroundMode === "ai"
                       ? "Preparing AI and camera…"
@@ -825,7 +852,9 @@ export function LivePreview({
             {loading && (
               <p style={{ fontSize: 13, color: "#66685e", margin: 0 }}>
                 {settings.camera.mode === "canon"
-                  ? canonStarting ? "Starting Canon live view…" : "Processing your live preview…"
+                  ? canonReconnecting
+                    ? `${canonReconnecting} Reconnecting automatically…`
+                    : canonStarting ? "Starting Canon live view…" : "Processing your live preview…"
                   : "Your browser may ask for camera permission."}
               </p>
             )}
