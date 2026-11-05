@@ -7,17 +7,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, LoaderCircle, RefreshCw, VideoOff } from "lucide-react";
 import type { Background, KioskSettings } from "@/lib/kiosk-types";
 import { createBackgroundCompositor } from "@/lib/background-compositor";
-import { createPersonSegmenter, type PersonSegmenter } from "@/lib/person-segmentation";
-import { isBackgroundReferenceModel, isNativeForegroundModel, type AiRuntimeInfo } from "@/lib/ai-models";
-import { getBackgroundReferenceCameraKey } from "@/lib/background-reference-camera";
-import { createPreviewPerformanceTracker, type PreviewPerformance } from "@/lib/preview-performance";
 import { requestCanonPhoto, waitForPreview } from "./capture-camera";
 import { createCanonLiveView } from "./canon-live-view";
 import { captureCanonWithLiveView } from "./canon-capture";
 import { abortableDelay, type CapturePhoto } from "./capture-sequence";
-import { captureBackgroundReference } from "./capture-background-reference";
-
-export type { PreviewPerformance } from "@/lib/preview-performance";
 
 export interface PreviewStatus {
   ready: boolean;
@@ -34,10 +27,7 @@ interface LivePreviewProps {
   autoConnectCanon?: boolean;
   className?: string;
   onCaptureReady?: (capture: CapturePhoto | null, backgroundUrl?: string) => void;
-  onReferenceCaptureReady?: (capture: (() => Promise<Blob>) | null) => void;
   onStatusChange?: (status: PreviewStatus) => void;
-  onPerformanceChange?: (performance: PreviewPerformance | null) => void;
-  onRuntimeChange?: (runtime: AiRuntimeInfo | null) => void;
 }
 
 function readableCameraError(error: unknown): string {
@@ -64,10 +54,7 @@ export function LivePreview({
   autoConnectCanon = false,
   className = "",
   onCaptureReady,
-  onReferenceCaptureReady,
   onStatusChange,
-  onPerformanceChange,
-  onRuntimeChange,
 }: LivePreviewProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -77,7 +64,6 @@ export function LivePreview({
   const backgroundUrlRef = useRef<string | undefined>(undefined);
   const loadedBackgroundUrlRef = useRef<string | undefined | null>(null);
   const settingsRef = useRef(settings);
-  const segmenterRef = useRef<PersonSegmenter | null>(null);
   const renderFlightRef = useRef<Promise<void> | null>(null);
   const sourceAbortRef = useRef<AbortController | null>(null);
   const previewFlightRef = useRef<Promise<void> | null>(null);
@@ -89,8 +75,6 @@ export function LivePreview({
   const canonFrameVersionRef = useRef(0);
   const renderedCanonFrameRef = useRef(0);
   const capturingRef = useRef(false);
-  const performanceCallbackRef = useRef(onPerformanceChange);
-  const runtimeCallbackRef = useRef(onRuntimeChange);
   const [cameraReady, setCameraReady] = useState(false);
   const [readySourceKey, setReadySourceKey] = useState("");
   const [renderedBackgroundUrl, setRenderedBackgroundUrl] = useState<string | undefined | null>(null);
@@ -116,16 +100,11 @@ export function LivePreview({
     (backgroundStatus.url !== backgroundUrl ||
       (!backgroundStatus.loaded && !backgroundError)),
   );
-  const referenceKey = isBackgroundReferenceModel(settings.aiModel)
-    ? JSON.stringify([settings.backgroundReference?.id, getBackgroundReferenceCameraKey(settings.camera)]) : "";
   const sourceKey = JSON.stringify([
     enabled,
     settings.camera.mode,
     settings.camera.deviceId,
     settings.backgroundMode,
-    settings.aiModel,
-    settings.aiAcceleration,
-    referenceKey,
     retry,
   ]);
   const sourceReady = cameraReady && readySourceKey === sourceKey;
@@ -282,12 +261,6 @@ export function LivePreview({
   useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
-  useEffect(() => {
-    performanceCallbackRef.current = onPerformanceChange;
-  }, [onPerformanceChange]);
-  useEffect(() => {
-    runtimeCallbackRef.current = onRuntimeChange;
-  }, [onRuntimeChange]);
 
   useEffect(() => {
     let current = true;
@@ -295,10 +268,7 @@ export function LivePreview({
     loadedBackgroundUrlRef.current = backgroundUrl ? null : undefined;
     backgroundRef.current = null;
     queueMicrotask(() => {
-      if (current) {
-        setBackgroundStatus({ url: backgroundUrl, loaded: false, error: null });
-        performanceCallbackRef.current?.(null);
-      }
+      if (current) setBackgroundStatus({ url: backgroundUrl, loaded: false, error: null });
     });
     if (!backgroundUrl) return;
     const backdrop = new Image();
@@ -337,28 +307,7 @@ export function LivePreview({
     let lastSettingsKey = "";
     let lastBackground: HTMLImageElement | null = null;
     let renderFailed = false;
-    let segmenter: PersonSegmenter | null = null;
     const composite = createBackgroundCompositor();
-    let runtimeKey = "";
-    let recordPerformance = createPreviewPerformanceTracker(settings.aiModel, settings.aiAcceleration);
-    let lastPerformanceReport = 0;
-    const clearPerformance = (stopRuntime = false) => {
-      recordPerformance = createPreviewPerformanceTracker(settings.aiModel, settings.aiAcceleration, segmenter?.runtime);
-      lastPerformanceReport = 0;
-      performanceCallbackRef.current?.(null);
-      if (stopRuntime) {
-        runtimeKey = "";
-        runtimeCallbackRef.current?.(null);
-      }
-    };
-    const reportRuntime = () => {
-      if (controller.signal.aborted || !segmenter) return;
-      const nextKey = JSON.stringify(segmenter.runtime);
-      if (nextKey === runtimeKey) return;
-      runtimeKey = nextKey;
-      clearPerformance();
-      runtimeCallbackRef.current?.(segmenter.runtime);
-    };
     const retained = settings.camera.mode === "canon" ? canonFrameRef.current : null;
     sourceRef.current = retained;
     sourceSizeRef.current = retained ? { width: retained.width, height: retained.height } : { width: 0, height: 0 };
@@ -369,8 +318,6 @@ export function LivePreview({
         setCameraReady(false);
         setCameraError(null);
         setProcessingFailed(false);
-        performanceCallbackRef.current?.(null);
-        runtimeCallbackRef.current?.(null);
       }
     });
     if (!enabled) return () => controller.abort();
@@ -381,10 +328,9 @@ export function LivePreview({
       const frameVersion = canonFrameVersionRef.current;
       const { width, height } = sourceSizeRef.current;
       const currentSettings = settingsRef.current;
-      // Parent benchmark updates must not trigger another Canon inference.
+      // Unrelated parent updates must not re-render an unchanged Canon frame.
       const settingsKey = JSON.stringify([
-        currentSettings.camera.mirror, currentSettings.backgroundMode,
-        currentSettings.aiModel, currentSettings.aiAcceleration, currentSettings.chroma,
+        currentSettings.camera.mirror, currentSettings.backgroundMode, currentSettings.chroma,
       ]);
       const backdrop = backgroundRef.current;
       const sceneUrl = loadedBackgroundUrlRef.current;
@@ -394,18 +340,15 @@ export function LivePreview({
         source !== lastSource ||
         settingsKey !== lastSettingsKey ||
         backdrop !== lastBackground;
-      const fps = currentSettings.backgroundMode === "ai" ? 12 : 24;
       if (
         !capturingRef.current && !renderFailed && sceneLoaded && changed && source && width && height &&
-        canvasRef.current && time - lastRenderTime >= 1000 / fps
+        canvasRef.current && time - lastRenderTime >= 1000 / 24
       ) {
         lastRenderTime = time;
-        if (backdrop !== lastBackground) clearPerformance();
-        const processingStart = performance.now();
         const flight = composite({
           source, sourceWidth: width, sourceHeight: height,
           output: canvasRef.current, width: 960, settings: currentSettings,
-          background: backdrop, segmenter, signal: controller.signal,
+          background: backdrop, signal: controller.signal,
         });
         renderFlightRef.current = flight;
         try {
@@ -418,22 +361,12 @@ export function LivePreview({
           setCameraReady(true);
           setReadySourceKey(sourceKey);
           setRenderedBackgroundUrl(sceneUrl);
-          reportRuntime();
-          if (settings.backgroundMode === "ai" && performanceCallbackRef.current) {
-            const completedAt = performance.now();
-            const measurement = recordPerformance(completedAt - processingStart, completedAt);
-            if (measurement && completedAt - lastPerformanceReport >= 1000) {
-              lastPerformanceReport = completedAt;
-              performanceCallbackRef.current(measurement);
-            }
-          }
         } catch (error) {
           if (!controller.signal.aborted) {
             renderFailed = true;
             setCameraError(readableCameraError(error));
             setProcessingFailed(true);
             setCameraReady(false);
-            clearPerformance(true);
           }
         } finally {
           if (renderFlightRef.current === flight) renderFlightRef.current = null;
@@ -477,7 +410,6 @@ export function LivePreview({
         if (!controller.signal.aborted) {
           sourceRef.current = null;
           setCameraReady(false);
-          clearPerformance(true);
           setCameraError(
             "The camera was disconnected. Reconnect it, then try again.",
           );
@@ -486,37 +418,18 @@ export function LivePreview({
       void render();
     }
 
-    async function start() {
-      if (settings.backgroundMode === "ai") {
-        const currentSettings = settingsRef.current;
-        segmenter = await createPersonSegmenter(settings.aiModel, controller.signal, settings.aiAcceleration, {
-          reference: currentSettings.backgroundReference, camera: currentSettings.camera,
-        });
-        if (controller.signal.aborted) {
-          segmenter.close();
-          return;
-        }
-        segmenterRef.current = segmenter;
-        reportRuntime();
-      }
-      if (settings.camera.mode === "canon") {
-        void render();
-      } else await startBrowser();
-    }
-    void start().catch((error) => {
+    if (settings.camera.mode === "canon") void render();
+    else void startBrowser().catch((error) => {
       stream?.getTracks().forEach((track) => track.stop());
       if (!controller.signal.aborted) {
         setCameraError(readableCameraError(error));
         setProcessingFailed(true);
-        clearPerformance(true);
       }
     });
 
     return () => {
       controller.abort();
       cancelAnimationFrame(animation);
-      segmenter?.close();
-      if (segmenterRef.current === segmenter) segmenterRef.current = null;
       stream?.getTracks().forEach((track) => track.stop());
       if (video) video.srcObject = null;
       sourceRef.current = null;
@@ -526,8 +439,6 @@ export function LivePreview({
     settings.camera.mode,
     settings.camera.deviceId,
     settings.backgroundMode,
-    settings.aiModel,
-    settings.aiAcceleration,
     retry,
     sourceKey,
   ]);
@@ -535,14 +446,12 @@ export function LivePreview({
   const capture = useCallback(
     async (guestSignal?: AbortSignal, options?: { resumePreview: boolean }) => {
       const currentSettings = settingsRef.current;
-      const generalForeground = currentSettings.backgroundMode === "ai" && isNativeForegroundModel(currentSettings.aiModel);
       const sourceSignal = sourceAbortRef.current?.signal;
       const signal = AbortSignal.any([
         ...(sourceSignal ? [sourceSignal] : []),
         ...(guestSignal ? [guestSignal] : []),
-        // Allow a slow general-model preview to drain, then the shutter and
-        // the captured frame's own inference, within one bounded operation.
-        AbortSignal.timeout(generalForeground ? 280000 : 100000),
+        // The shutter, download, and keying share one bounded operation.
+        AbortSignal.timeout(100000),
       ]);
       signal.throwIfAborted();
       if (!sourceReady || backgroundLoading || backgroundError || renderedBackgroundUrl !== backgroundUrl)
@@ -557,7 +466,6 @@ export function LivePreview({
       const output = document.createElement("canvas");
       const composite = createBackgroundCompositor();
       const backdrop = backgroundRef.current;
-      const segmenter = segmenterRef.current;
       let photo: ImageBitmap | null = null;
       const takePhoto = async () => {
         try {
@@ -573,7 +481,7 @@ export function LivePreview({
             await composite({
               source: photo, sourceWidth: photo.width, sourceHeight: photo.height,
               output, width: Math.min(2400, photo.width), settings: currentSettings,
-              background: backdrop, segmenter, signal,
+              background: backdrop, signal,
             });
           } else {
             const source = sourceRef.current;
@@ -594,11 +502,10 @@ export function LivePreview({
             await composite({
               source, sourceWidth: size.width, sourceHeight: size.height,
               output, width: Math.min(2400, size.width), settings: currentSettings,
-              background: backdrop, segmenter, signal,
+              background: backdrop, signal,
             });
           }
           signal.throwIfAborted();
-          if (segmenter) runtimeCallbackRef.current?.(segmenter.runtime);
           return output.toDataURL("image/jpeg", 0.92);
         } finally {
           photo?.close();
@@ -634,7 +541,7 @@ export function LivePreview({
             let failed = false;
             let failure: unknown;
             void live.whenReady().catch((error) => { failed = true; failure = error; });
-            const deadline = Date.now() + (generalForeground ? 100000 : 30000);
+            const deadline = Date.now() + 30000;
             while (Date.now() < deadline) {
               signal.throwIfAborted();
               if (failed) throw failure;
@@ -669,26 +576,6 @@ export function LivePreview({
     settings.camera.mode === "canon"
       ? "Canon live preview"
       : "Browser camera";
-
-  const captureReference = useCallback(() => {
-    const source = sourceRef.current;
-    const size = sourceSizeRef.current;
-    if (!sourceReady || !source || !size.width || !size.height || capturingRef.current ||
-      sourceAbortRef.current?.signal.aborted ||
-      (settingsRef.current.camera.mode === "canon" && (!canonMayResumeRef.current || !previewFlightRef.current)))
-      throw new Error("Wait for a live camera frame before capturing the empty background.");
-    if (settingsRef.current.camera.mode === "browser") {
-      const stream = videoRef.current?.srcObject as MediaStream | null;
-      if (!stream?.getVideoTracks().some((track) => track.readyState === "live") ||
-        (videoRef.current?.readyState ?? 0) < 2)
-        throw new Error("The camera is no longer available. Reconnect it before capturing the empty background.");
-    }
-    return captureBackgroundReference(source, size.width, size.height, settingsRef.current.camera.mirror);
-  }, [sourceReady]);
-  useEffect(() => {
-    onReferenceCaptureReady?.(ready ? captureReference : null);
-    return () => onReferenceCaptureReady?.(null);
-  }, [onReferenceCaptureReady, ready, captureReference]);
 
   useEffect(() => {
     onCaptureReady?.(ready ? capture : null, backgroundUrl);
@@ -795,9 +682,7 @@ export function LivePreview({
                     ? "Reconnecting the camera…"
                     : backgroundLoading && sourceReady
                     ? "Setting the scene…"
-                    : settings.backgroundMode === "ai"
-                      ? "Preparing AI and camera…"
-                      : "Connecting your camera…"
+                    : "Connecting your camera…"
                   : "Preview is paused"}
             </p>
             {error && (

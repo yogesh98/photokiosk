@@ -6,7 +6,6 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import sharp from "sharp";
 import type { SendMailOptions } from "nodemailer";
-import { AI_ACCELERATIONS, AI_MODELS, DEFAULT_AI_ACCELERATION, DEFAULT_AI_MODEL } from "./ai-models";
 import {
   addBackground, assertLocalRequest, beginSessionEmail, createSession, deleteBackground,
   getSettings, readMedia, readStudio, StudioError, updateSettings, validateEmail,
@@ -52,8 +51,7 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     assert.deepEqual(studio.backgrounds.map((item) => item.id), ["coast", "mountains", "desert", "palms", "lake", "studio"]);
     assert.equal(studio.sessions.length, 0);
     assert.equal(studio.settings.backgroundMode, "green-screen");
-    assert.equal(studio.settings.aiModel, DEFAULT_AI_MODEL);
-    assert.equal(studio.settings.aiAcceleration, DEFAULT_AI_ACCELERATION);
+    for (const key of ["aiModel", "aiAcceleration", "backgroundReference"]) assert.ok(!(key in studio.settings));
     assert.equal(studio.settings.camera.exposureMode, "auto");
     assert.deepEqual(studio.settings.backgroundSequence, { mode: "single", photoIds: ["coast", "coast", "coast"] });
     assert.equal(studio.settings.gmail.configured, false);
@@ -93,7 +91,7 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     const directory = await isolated();
     await configureGmail();
     await updateSettings({
-      eventName: "An existing camera booth", backgroundMode: "ai", aiModel: "modnet",
+      eventName: "An existing camera booth", backgroundMode: "off",
       camera: { mode: "canon", deviceId: "existing-camera", iso: "1600", aperture: "8", shutterSpeed: "1/250", mirror: false },
       backgroundSequence: { mode: "rotate", photoIds: ["coast", "mountains", "desert"] },
     });
@@ -188,7 +186,7 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
   test("saves all background modes and exposes the selected mode to the guest kiosk", async () => {
     const directory = await isolated();
     await updateSettings({ chroma: { similarity: 0.47, smoothness: 0.16, spill: 0.51 } });
-    for (const backgroundMode of ["ai", "off", "green-screen", "ai"] as const) {
+    for (const backgroundMode of ["off", "green-screen", "off"] as const) {
       const response = await settingsPATCH(request("/api/settings", {
         ...json({ backgroundMode }), method: "PATCH",
       }));
@@ -210,143 +208,44 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     }
   });
 
-  test("migrates booths without a model choice to the original model and preserves their data", async () => {
+  test("migrates booths saved with AI background replacement to green screen and drops AI settings", async () => {
     const directory = await isolated();
     await configureGmail();
-    await updateSettings({ backgroundMode: "ai", eventName: "An existing AI booth" });
+    await updateSettings({ eventName: "An existing AI booth", chroma: { similarity: 0.47 } });
     await createSession(sessionInput());
     const filename = path.join(directory, "studio.json");
-    const legacy = JSON.parse(await readFile(filename, "utf8"));
-    delete legacy.settings.aiModel;
+    const current = JSON.parse(await readFile(filename, "utf8"));
+    const legacy = {
+      ...current,
+      settings: {
+        ...current.settings,
+        backgroundMode: "ai", aiModel: "birefnet-lite", aiAcceleration: "gpu",
+        backgroundReference: { id: "00000000-0000-4000-8000-000000000000", url: "/api/ai/reference/x" },
+        chroma: { ...current.settings.chroma, enabled: false },
+      },
+    };
     await writeFile(filename, JSON.stringify(legacy));
 
     const migrated = await getSettings();
-    assert.equal(migrated.aiModel, DEFAULT_AI_MODEL);
-    assert.equal(migrated.backgroundMode, "ai");
+    assert.equal(migrated.backgroundMode, "green-screen");
+    assert.deepEqual(migrated.chroma, { ...current.settings.chroma, enabled: true });
+    assert.equal(migrated.eventName, "An existing AI booth");
+    for (const key of ["aiModel", "aiAcceleration", "backgroundReference"]) assert.ok(!(key in migrated));
+    assert.deepEqual(JSON.parse(await readFile(filename, "utf8")), current, "Only the AI settings change");
+    assert.equal((await readStudio()).sessions.length, 1);
+    assert.equal((await (await kioskGET(request("/api/kiosk"))).json()).settings.backgroundMode, "green-screen");
+
+    // An admin page loaded before the update may still send AI fields.
+    await updateSettings({ aiModel: "modnet", aiAcceleration: "cpu", eventName: "Still saved" });
     const persisted = JSON.parse(await readFile(filename, "utf8"));
-    assert.deepEqual(persisted, {
-      ...legacy,
-      settings: { ...legacy.settings, aiModel: DEFAULT_AI_MODEL },
-    });
-    assert.equal((await getSettings()).aiModel, DEFAULT_AI_MODEL);
-  });
-
-  test("saves each AI model through the settings API and round-trips it to the guest kiosk", async () => {
-    const directory = await isolated();
-    for (const { id: aiModel } of AI_MODELS) {
-      const response = await settingsPATCH(request("/api/settings", {
-        ...json({ backgroundMode: "ai", aiModel }), method: "PATCH",
-      }));
-      assert.equal(response.status, 200);
-      assert.equal((await response.json()).settings.aiModel, aiModel);
-      assert.equal((await getSettings()).aiModel, aiModel);
-      const persisted = JSON.parse(await readFile(path.join(directory, "studio.json"), "utf8"));
-      assert.equal(persisted.settings.aiModel, aiModel);
-      const guest = await kioskGET(request("/api/kiosk"));
-      assert.equal(guest.status, 200);
-      const guestSettings = (await guest.json()).settings;
-      assert.equal(guestSettings.aiModel, aiModel);
-      assert.equal(guestSettings.backgroundMode, "ai");
-    }
-    await updateSettings({ backgroundMode: "off" });
-    assert.equal((await getSettings()).aiModel, AI_MODELS.at(-1)!.id);
-  });
-
-  test("rejects invalid AI models atomically, including mixed settings patches", async () => {
-    const directory = await isolated();
-    const filename = path.join(directory, "studio.json");
-    const before = await readFile(filename, "utf8");
-    for (const aiModel of ["unknown", "", null, false, 1, {}, []]) {
-      const response = await settingsPATCH(request("/api/settings", {
-        ...json({ eventName: "Should not save", backgroundMode: "ai", aiModel }), method: "PATCH",
-      }));
-      assert.equal(response.status, 400);
-      assert.match((await response.json()).error, /Choose an available AI model/);
-      assert.equal(await readFile(filename, "utf8"), before);
-    }
-    await assert.rejects(updateSettings({
-      aiModel: "modnet", gmail: { senderName: "Invalid\nSender" },
-    }), /single line/);
-    assert.equal(await readFile(filename, "utf8"), before);
-  });
-
-  test("reports an invalid saved AI model without overwriting existing booth data", async () => {
-    const directory = await isolated();
-    const filename = path.join(directory, "studio.json");
-    const invalid = JSON.parse(await readFile(filename, "utf8"));
-    invalid.settings.aiModel = "unknown";
-    const serialized = JSON.stringify(invalid);
-    await writeFile(filename, serialized);
-    await assert.rejects(readStudio(), (error: unknown) => error instanceof StudioError && error.status === 500);
-    assert.equal(await readFile(filename, "utf8"), serialized);
-  });
-
-  test("migrates booths without an acceleration preference and preserves existing data", async () => {
-    const directory = await isolated();
-    await configureGmail();
-    await updateSettings({ backgroundMode: "ai", aiModel: "modnet", eventName: "Existing booth" });
-    await createSession(sessionInput());
-    const filename = path.join(directory, "studio.json");
-    const legacy = JSON.parse(await readFile(filename, "utf8"));
-    delete legacy.settings.aiAcceleration;
-    await writeFile(filename, JSON.stringify(legacy));
-    assert.equal((await getSettings()).aiAcceleration, DEFAULT_AI_ACCELERATION);
-    assert.deepEqual(JSON.parse(await readFile(filename, "utf8")), {
-      ...legacy,
-      settings: { ...legacy.settings, aiAcceleration: DEFAULT_AI_ACCELERATION },
-    });
-  });
-
-  test("saves all acceleration preferences and round-trips them to the kiosk", async () => {
-    const directory = await isolated();
-    for (const { id: aiAcceleration } of AI_ACCELERATIONS) {
-      const response = await settingsPATCH(request("/api/settings", {
-        ...json({ backgroundMode: "ai", aiAcceleration }), method: "PATCH",
-      }));
-      assert.equal(response.status, 200);
-      assert.equal((await response.json()).settings.aiAcceleration, aiAcceleration);
-      assert.equal((await getSettings()).aiAcceleration, aiAcceleration);
-      const persisted = JSON.parse(await readFile(path.join(directory, "studio.json"), "utf8"));
-      assert.equal(persisted.settings.aiAcceleration, aiAcceleration);
-      assert.equal((await (await kioskGET(request("/api/kiosk"))).json()).settings.aiAcceleration, aiAcceleration);
-    }
-    await updateSettings({ backgroundMode: "off" });
-    assert.equal((await getSettings()).aiAcceleration, "gpu");
-  });
-
-  test("rejects invalid acceleration preferences atomically", async () => {
-    const directory = await isolated();
-    const filename = path.join(directory, "studio.json");
-    const before = await readFile(filename, "utf8");
-    for (const aiAcceleration of ["metal", "", null, true, 1, {}, []]) {
-      const response = await settingsPATCH(request("/api/settings", {
-        ...json({ eventName: "Should not save", aiModel: "modnet", aiAcceleration }), method: "PATCH",
-      }));
-      assert.equal(response.status, 400);
-      assert.match((await response.json()).error, /Choose Auto, CPU, or GPU/);
-      assert.equal(await readFile(filename, "utf8"), before);
-    }
-    await assert.rejects(updateSettings({
-      aiAcceleration: "gpu", gmail: { senderName: "Invalid\nSender" },
-    }), /single line/);
-    assert.equal(await readFile(filename, "utf8"), before);
-  });
-
-  test("preserves saved data with an invalid acceleration preference for recovery", async () => {
-    const directory = await isolated();
-    const filename = path.join(directory, "studio.json");
-    const invalid = JSON.parse(await readFile(filename, "utf8"));
-    invalid.settings.aiAcceleration = "invalid";
-    const serialized = JSON.stringify(invalid);
-    await writeFile(filename, serialized);
-    await assert.rejects(readStudio(), (error: unknown) => error instanceof StudioError && error.status === 500);
-    assert.equal(await readFile(filename, "utf8"), serialized);
+    assert.equal(persisted.settings.eventName, "Still saved");
+    for (const key of ["aiModel", "aiAcceleration"]) assert.ok(!(key in persisted.settings));
   });
 
   test("migrates older booths to the same active background for all photos without losing existing data", async () => {
     const directory = await isolated();
     await configureGmail();
-    await updateSettings({ activeBackgroundId: "mountains", backgroundMode: "ai", eventName: "Existing photo booth" });
+    await updateSettings({ activeBackgroundId: "mountains", backgroundMode: "off", eventName: "Existing photo booth" });
     await createSession(sessionInput());
     const filename = path.join(directory, "studio.json");
     const legacy = JSON.parse(await readFile(filename, "utf8"));
@@ -456,12 +355,9 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
 
   test("supports legacy toggle updates while an explicit background mode takes precedence", async () => {
     await isolated();
-    await updateSettings({ backgroundMode: "ai" });
+    await updateSettings({ backgroundMode: "off" });
     assert.equal((await updateSettings({ chroma: { enabled: true } })).backgroundMode, "green-screen");
     assert.equal((await updateSettings({ chroma: { enabled: false } })).backgroundMode, "off");
-    const ai = await updateSettings({ backgroundMode: "ai", chroma: { enabled: true } });
-    assert.equal(ai.backgroundMode, "ai");
-    assert.equal(ai.chroma.enabled, false);
     const green = await updateSettings({ backgroundMode: "green-screen", chroma: { enabled: false } });
     assert.equal(green.backgroundMode, "green-screen");
     assert.equal(green.chroma.enabled, true);
@@ -474,14 +370,14 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     const directory = await isolated();
     const filename = path.join(directory, "studio.json");
     const before = await readFile(filename, "utf8");
-    for (const backgroundMode of ["cloud", "", null, true, {}]) {
+    for (const backgroundMode of ["ai", "cloud", "", null, true, {}]) {
       await assert.rejects(updateSettings({
         eventName: "Should not save", chroma: { enabled: false, similarity: 0.6 }, backgroundMode,
-      }), /Choose green screen, AI, or original background mode/);
+      }), /Choose green screen or original background mode/);
       assert.equal(await readFile(filename, "utf8"), before);
     }
     await assert.rejects(updateSettings({
-      backgroundMode: "ai", gmail: { senderName: "Invalid\nSender" },
+      backgroundMode: "off", gmail: { senderName: "Invalid\nSender" },
     }), /single line/);
     assert.equal(await readFile(filename, "utf8"), before);
     const response = await settingsPATCH(request("/api/settings", {

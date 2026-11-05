@@ -100,7 +100,7 @@ export function StudioAdmin() {
   const background = data.backgrounds.find(
     (b) => b.id === settings.activeBackgroundId,
   );
-  // Keep a planned backdrop available when trying replacement before saving Off → AI.
+  // Keep a planned backdrop available when trying green screen before saving it.
   // LivePreview still honors the actual background mode.
   const previewBackground = resolveSessionBackgrounds(
     { ...settings, backgroundMode: "green-screen" },
@@ -631,11 +631,9 @@ export function StudioAdmin() {
                       icon: ImagePlus,
                       title: "Background replacement",
                       note:
-                        settings.backgroundMode === "ai"
-                          ? "AI background · runs on this device"
-                          : settings.backgroundMode === "green-screen"
-                            ? "Green screen removal is on"
-                            : "Original camera background",
+                        settings.backgroundMode === "green-screen"
+                          ? "Green screen removal is on"
+                          : "Original camera background",
                       good: settings.backgroundMode !== "off",
                     },
                   ].map((row) => (
@@ -931,7 +929,7 @@ export function StudioAdmin() {
                 </button>
               </div>
               <ChromaSettings
-                key={JSON.stringify([settings.backgroundMode, settings.aiModel, settings.aiAcceleration, settings.backgroundReference?.id, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
+                key={JSON.stringify([settings.backgroundMode, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
                 settings={settings}
                 background={previewBackground}
                 busy={busy}
@@ -963,7 +961,7 @@ export function StudioAdmin() {
                 onConnect={setBrowserReady}
               />
               <ChromaSettings
-                key={JSON.stringify([settings.backgroundMode, settings.aiModel, settings.aiAcceleration, settings.backgroundReference?.id, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
+                key={JSON.stringify([settings.backgroundMode, settings.chroma, settings.camera, settings.activeBackgroundId, settings.backgroundSequence])}
                 settings={settings}
                 background={previewBackground}
                 busy={busy}
@@ -1049,7 +1047,7 @@ export function StudioAdmin() {
             <span>
               {settings.backgroundMode === "off"
                 ? "Original camera background"
-                : `Photo 1: ${previewBackground?.name || "Selected scene"} · ${settings.backgroundMode === "ai" ? "AI background" : "Green screen"}`}
+                : `Photo 1: ${previewBackground?.name || "Selected scene"} · Green screen`}
             </span>
             <Link className="button dark" target="_blank" href="/kiosk">
               Launch kiosk
@@ -1073,7 +1071,7 @@ export function StudioAdmin() {
                 ],
                 [
                   "Set your scene.",
-                  "Choose a background, then select Green screen for a physical backdrop or AI background to replace the scene on this device. Choose Off to keep your original scene.",
+                  "Choose a background, then select Green screen for a physical backdrop. Choose Off to keep your original scene.",
                 ],
                 [
                   "Send the smiles.",

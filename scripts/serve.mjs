@@ -11,7 +11,6 @@ process.env.NODE_ENV = "production";
 require("@next/env").loadEnvConfig(root);
 // Resolve relative overrides against the checkout, never an individual release.
 process.env.PHOTO_KIOSK_DATA_DIR = path.resolve(root, process.env.PHOTO_KIOSK_DATA_DIR || ".data");
-process.env.PHOTO_KIOSK_AI_PYTHON = path.resolve(root, process.env.PHOTO_KIOSK_AI_PYTHON || ".venv-ai/bin/python");
 process.env.HOSTNAME = "0.0.0.0";
 process.env.PORT = "3000";
 require("./server.js");

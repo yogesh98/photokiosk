@@ -78,7 +78,7 @@ export function BackgroundSequenceSettings({
         </div>
         <p className="background-mode-help" id={`${groupId}-help`} aria-live="polite">
           {replacementOff
-            ? "Background replacement is off. All three photos keep the camera’s original scene. Enable Green screen or AI below to use these backgrounds."
+            ? "Background replacement is off. All three photos keep the camera’s original scene. Enable Green screen below to use these backgrounds."
             : backgrounds.length === 0
               ? "Upload a background to set the scenes for your photos."
               : sequence.mode === "rotate"

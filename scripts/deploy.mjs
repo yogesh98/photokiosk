@@ -99,12 +99,9 @@ async function deploy() {
     await mkdir(releases, { recursive: true });
     await cp(path.join(root, ".next/standalone"), release, { recursive: true, verbatimSymlinks: true });
     await cp(path.join(root, ".next/static"), path.join(release, ".next/static"), { recursive: true });
-    // Large model weights and event data stay in the checkout across releases.
-    for (const name of ["public", ".venv-ai"]) {
-      await rm(path.join(release, name), { recursive: true, force: true });
-      await symlink(path.join(root, name), path.join(release, name));
-    }
-    await cp(path.join(root, "scripts/native-ai"), path.join(release, "scripts/native-ai"), { recursive: true });
+    // Standalone output omits public assets; serve them from the checkout.
+    await rm(path.join(release, "public"), { recursive: true, force: true });
+    await symlink(path.join(root, "public"), path.join(release, "public"));
     await select(release);
     activated = true;
     await restart();

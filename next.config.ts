@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
   cacheComponents: true,
   partialPrefetching: true,
   // Guest photos and Gmail credentials belong to this computer, never a build artifact.
-  outputFileTracingExcludes: { "*": [".data/**/*", ".deploy/**/*", ".venv-ai/**/*", "**/*.test.*"] },
+  outputFileTracingExcludes: { "*": [".data/**/*", ".deploy/**/*", "**/*.test.*"] },
   turbopack: {
     rules: {
       "*.css": {

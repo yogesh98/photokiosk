@@ -11,15 +11,11 @@ import path from "node:path";
 import os from "node:os";
 import sharp from "sharp";
 import { unstable_rethrow } from "next/navigation";
-import { DEFAULT_AI_ACCELERATION, DEFAULT_AI_MODEL, isAiAcceleration, isAiModelId } from "./ai-models";
 import { isBackgroundSequence } from "./background-sequence";
-import { BACKGROUND_REFERENCE_HEIGHT, BACKGROUND_REFERENCE_ID_PATTERN, BACKGROUND_REFERENCE_WIDTH, getBackgroundReferenceCameraKey, isBackgroundReference } from "./background-reference-camera";
-import { BackgroundReferenceImageError, normalizeBackgroundReference } from "./background-reference";
 import {
   DEFAULT_SETTINGS,
   type Background,
   type BackgroundMode,
-  type BackgroundReference,
   type CameraExposureMode,
   type KioskSettings,
   type PhotoSession,
@@ -63,8 +59,16 @@ const BUILTINS: Background[] = [
 }));
 
 function isBackgroundMode(value: unknown): value is BackgroundMode {
-  return value === "green-screen" || value === "ai" || value === "off";
+  return value === "green-screen" || value === "off";
 }
+
+/** Settings saved before AI background replacement was removed. */
+type LegacySettings = Omit<KioskSettings, "backgroundMode"> & {
+  backgroundMode: BackgroundMode | "ai";
+  aiModel?: unknown;
+  aiAcceleration?: unknown;
+  backgroundReference?: unknown;
+};
 
 function isCameraExposureMode(value: unknown): value is CameraExposureMode {
   return value === "auto" || value === "manual";
@@ -136,15 +140,10 @@ async function withStore<T>(
         (state.settings.camera.exposureMode !== undefined &&
           !isCameraExposureMode(state.settings.camera.exposureMode)) ||
         (state.settings.backgroundMode !== undefined &&
-          !isBackgroundMode(state.settings.backgroundMode)) ||
-        (state.settings.aiModel !== undefined &&
-          !isAiModelId(state.settings.aiModel)) ||
-        (state.settings.aiAcceleration !== undefined &&
-          !isAiAcceleration(state.settings.aiAcceleration)) ||
+          !isBackgroundMode(state.settings.backgroundMode) &&
+          (state.settings as LegacySettings).backgroundMode !== "ai") ||
         (state.settings.backgroundSequence !== undefined &&
           !isBackgroundSequence(state.settings.backgroundSequence)) ||
-        (state.settings.backgroundReference !== undefined && state.settings.backgroundReference !== null &&
-          !isBackgroundReference(state.settings.backgroundReference)) ||
         !Array.isArray(state.backgrounds) ||
         !Array.isArray(state.sessions)
       ) {
@@ -178,18 +177,18 @@ async function withStore<T>(
         : "off";
       changed = true;
     }
-    // Earlier AI booths used the fast Selfie Segmenter model exclusively.
-    if (state.settings.aiModel === undefined) {
-      state.settings.aiModel = DEFAULT_AI_MODEL;
+    // AI background replacement was removed. Its booths switch to green
+    // screen, keeping their backgrounds, sequence, and chroma tuning.
+    const legacy = state.settings as LegacySettings;
+    if (legacy.backgroundMode === "ai") {
+      legacy.backgroundMode = "green-screen";
       changed = true;
     }
-    if (state.settings.aiAcceleration === undefined) {
-      state.settings.aiAcceleration = DEFAULT_AI_ACCELERATION;
-      changed = true;
-    }
-    if (state.settings.backgroundReference === undefined) {
-      state.settings.backgroundReference = null;
-      changed = true;
+    for (const key of ["aiModel", "aiAcceleration", "backgroundReference"] as const) {
+      if (key in legacy) {
+        delete legacy[key];
+        changed = true;
+      }
     }
     if (state.settings.backgroundSequence === undefined) {
       const id = state.settings.activeBackgroundId;
@@ -313,8 +312,6 @@ export function validateEmail(value: unknown): string {
 
 export async function updateSettings(input: unknown): Promise<KioskSettings> {
   const patch = record(input, "Settings");
-  if ("backgroundReference" in patch)
-    throw new StudioError("Capture a new empty background to update its reference image.");
   return withStore((state) => {
     const settings = state.settings;
     if ("eventName" in patch)
@@ -373,21 +370,11 @@ export async function updateSettings(input: unknown): Promise<KioskSettings> {
     if ("backgroundMode" in patch) {
       if (!isBackgroundMode(patch.backgroundMode))
         throw new StudioError(
-          "Choose green screen, AI, or original background mode.",
+          "Choose green screen or original background mode.",
         );
       settings.backgroundMode = patch.backgroundMode;
     }
     settings.chroma.enabled = settings.backgroundMode === "green-screen";
-    if ("aiModel" in patch) {
-      if (!isAiModelId(patch.aiModel))
-        throw new StudioError("Choose an available AI model.");
-      settings.aiModel = patch.aiModel;
-    }
-    if ("aiAcceleration" in patch) {
-      if (!isAiAcceleration(patch.aiAcceleration))
-        throw new StudioError("Choose Auto, CPU, or GPU acceleration.");
-      settings.aiAcceleration = patch.aiAcceleration;
-    }
     if ("gmail" in patch) {
       const gmail = record(patch.gmail, "Gmail");
       if ("email" in gmail)
@@ -492,48 +479,6 @@ async function writePrivateFile(
     flag: "wx",
     mode: 0o600,
   });
-}
-
-export async function saveBackgroundReference(file: File, cameraKeyInput: unknown): Promise<KioskSettings> {
-  const cameraKey = text(cameraKeyInput, "Reference camera settings", 2048, false);
-  let bytes: Buffer;
-  try {
-    bytes = await normalizeBackgroundReference(file);
-  } catch (error) {
-    if (error instanceof BackgroundReferenceImageError) throw new StudioError(error.message, error.status);
-    throw error;
-  }
-  return withStore(async (state, root) => {
-    if (cameraKey !== getBackgroundReferenceCameraKey(state.settings.camera))
-      throw new StudioError("The camera settings changed. Save the camera settings and capture the empty background again.", 409);
-    const id = randomUUID();
-    const reference: BackgroundReference = {
-      id, url: `/api/ai/reference/${id}`, width: BACKGROUND_REFERENCE_WIDTH,
-      height: BACKGROUND_REFERENCE_HEIGHT, capturedAt: new Date().toISOString(), cameraKey,
-    };
-    const relative = ["reference-backgrounds", `${id}.png`];
-    try {
-      await writePrivateFile(root, relative, bytes);
-      state.settings.backgroundReference = reference;
-      // Commit the image and its metadata under one store lock. Keep previous
-      // immutable plates available to any in-flight capture using their IDs.
-      await persist(state, root);
-    } catch (error) {
-      await rm(path.join(root, ...relative), { force: true });
-      throw error;
-    }
-    return publicSettings(state);
-  });
-}
-
-export async function readBackgroundReference(id: string): Promise<Buffer> {
-  if (!BACKGROUND_REFERENCE_ID_PATTERN.test(id)) throw new StudioError("Reference image not found.", 404);
-  try {
-    return await readFile(path.join(/* turbopackIgnore: true */ dataDirectory(), "reference-backgrounds", `${id}.png`));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") throw new StudioError("Reference image not found.", 404);
-    throw error;
-  }
 }
 
 export async function addBackground(

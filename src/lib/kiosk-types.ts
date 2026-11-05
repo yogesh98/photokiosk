@@ -1,29 +1,16 @@
-import { DEFAULT_AI_ACCELERATION, DEFAULT_AI_MODEL, type AiAcceleration, type AiModelId } from "./ai-models";
-
 export type CameraMode = "browser" | "canon";
 export type CameraExposureMode = "auto" | "manual";
-export type BackgroundMode = "green-screen" | "ai" | "off";
+export type BackgroundMode = "green-screen" | "off";
 export type BackgroundSequenceMode = "single" | "rotate" | "custom";
 export interface BackgroundSequence {
   mode: BackgroundSequenceMode;
   photoIds: [string, string, string];
-}
-export interface BackgroundReference {
-  id: string;
-  url: string;
-  width: 768;
-  height: 512;
-  capturedAt: string;
-  cameraKey: string;
 }
 export interface KioskSettings {
   eventName: string;
   activeBackgroundId: string;
   backgroundMode: BackgroundMode;
   backgroundSequence: BackgroundSequence;
-  aiModel: AiModelId;
-  aiAcceleration: AiAcceleration;
-  backgroundReference: BackgroundReference | null;
   camera: {
     mode: CameraMode;
     exposureMode: CameraExposureMode;
@@ -92,9 +79,6 @@ export const DEFAULT_SETTINGS: KioskSettings = {
   activeBackgroundId: "coast",
   backgroundMode: "green-screen",
   backgroundSequence: { mode: "single", photoIds: ["coast", "coast", "coast"] },
-  aiModel: DEFAULT_AI_MODEL,
-  aiAcceleration: DEFAULT_AI_ACCELERATION,
-  backgroundReference: null,
   camera: {
     mode: "browser",
     exposureMode: "auto",

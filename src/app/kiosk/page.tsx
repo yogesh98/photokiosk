@@ -24,7 +24,6 @@ import {
 } from "lucide-react";
 import type { PhotoSession, StudioData } from "@/lib/kiosk-types";
 import { resolveSessionBackgrounds } from "@/lib/background-sequence";
-import { isNativeForegroundModel } from "@/lib/ai-models";
 import {
   LivePreview,
   type PreviewStatus,
@@ -298,8 +297,6 @@ export default function KioskPage() {
             () => ({ ...captureRef.current, error: cameraErrorRef.current }),
             plannedBackgrounds[number - 1]?.url,
             signal,
-            undefined,
-            studio?.settings.backgroundMode === "ai" && isNativeForegroundModel(studio.settings.aiModel) ? 210000 : 30000,
           );
           setPreparingPhoto(false);
         },
