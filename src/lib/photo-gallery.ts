@@ -1,57 +1,52 @@
 import { getPhotoGalleryAssets } from "./photo-gallery-assets";
+import { diwaliLogoSVG } from "./diwali-logo";
 
-function escapeHTML(value: string) {
-  return value.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]!);
-}
+// Every guest's download page carries this name, whatever the booth's workspace is called in Admin.
+export const GALLERY_EVENT_NAME = "BAPS Edison Diwali 2026";
 
-export function renderPhotoGallery(eventName: string): string {
-  const title = escapeHTML(eventName);
+export function renderPhotoGallery(): string {
+  const title = GALLERY_EVENT_NAME;
   const assets = getPhotoGalleryAssets();
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#4a78e0"><meta name="robots" content="noindex, nofollow, noarchive"><meta name="referrer" content="no-referrer"><title>${title} · Your photos</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><meta name="theme-color" content="#0c0a12"><meta name="robots" content="noindex, nofollow, noarchive"><meta name="referrer" content="no-referrer"><title>${title} · Your photos</title>
 <style>
-@font-face{font-family:Shrikhand;src:url("${assets.shrikhand}") format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:Dehanna;src:url("${assets.dehanna}") format("woff2");font-weight:400;font-display:swap}
 @font-face{font-family:Figtree;src:url("${assets.figtreeRegular}") format("woff2");font-weight:400;font-display:swap}
 @font-face{font-family:Figtree;src:url("${assets.figtreeBold}") format("woff2");font-weight:700;font-display:swap}
-:root{color-scheme:light;--blue:#4a78e0;--deep:#2f55b0;--white:#f4f6fa}
+:root{color-scheme:dark;--ink:#0c0a12;--panel:#15111c;--gold:#e8c879;--gold-hi:#fff1c4;--text:#f1e4c2;--muted:rgba(241,228,194,.7);--line:rgba(232,200,121,.42)}
 *{box-sizing:border-box}
-body{margin:0;min-height:100dvh;background:var(--blue);color:var(--white);font:16px/1.5 Figtree,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-tap-highlight-color:transparent}
-main{max-width:1080px;margin:auto;padding:40px 28px max(48px,env(safe-area-inset-bottom))}
+body{margin:0;min-height:100dvh;background:var(--ink);color:var(--text);font:16px/1.5 Figtree,system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-tap-highlight-color:transparent}
+main{max-width:1080px;margin:auto;padding:36px 28px max(48px,env(safe-area-inset-bottom))}
 header{text-align:center}
-.sign{position:relative;max-width:600px;margin:auto;padding:16px;border-radius:32px;background:var(--deep);box-shadow:0 12px 32px #1c263e30,0 0 48px #f4f6fa35}
-.sign::before{content:"";position:absolute;inset:5px;border-radius:28px;pointer-events:none;background:radial-gradient(circle,#fff 2px,transparent 3px) top left/22px 8px repeat-x,radial-gradient(circle,#fff 2px,transparent 3px) bottom left/22px 8px repeat-x,radial-gradient(circle,#fff 2px,transparent 3px) top left/8px 22px repeat-y,radial-gradient(circle,#fff 2px,transparent 3px) top right/8px 22px repeat-y}
-.sign-panel{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:center;gap:10px 16px;padding:18px;border-radius:19px;background:var(--white);color:var(--deep)}
-.brand{display:block;width:100%;height:auto}
-h1{margin:0;font:400 clamp(30px,7.8vw,52px)/1 Shrikhand,Georgia,serif;text-align:left;color:var(--blue)}
-h1 span{display:block}
-.event-name{grid-column:1/-1;margin:0;font-size:15px;font-weight:700;line-height:1.35;overflow-wrap:anywhere}
-.intro{margin:22px 0 0;font-size:20px;font-weight:700;line-height:1.4}
-.actions{max-width:520px;margin:24px auto 34px;padding:22px;border-radius:26px;background:var(--white);color:var(--deep);box-shadow:0 7px 0 var(--deep)}
-.button{display:flex;align-items:center;justify-content:center;min-height:56px;width:100%;padding:13px 18px;border:2px solid var(--deep);border-radius:999px;background:var(--deep);color:white;font:700 18px/1.3 Figtree,system-ui,sans-serif;text-decoration:none;cursor:pointer;touch-action:manipulation}
+.brand{display:block;width:min(100%,420px);height:auto;margin:0 auto}
+.brand .dl-glow,.brand .dl-sheen{display:none}
+h1{margin:22px 0 0;font:400 clamp(52px,14vw,92px)/1.02 Dehanna,Didot,Georgia,serif;color:var(--gold)}
+.event-name{margin:10px 0 0;font-size:13px;font-weight:700;letter-spacing:.32em;text-transform:uppercase;color:var(--muted);overflow-wrap:anywhere}
+.intro{margin:18px 0 0;font-size:20px;font-weight:700;line-height:1.4}
+.actions{max-width:520px;margin:26px auto 40px;padding:22px;border:1px solid var(--line);border-radius:26px;background:var(--panel)}
+.button{display:flex;align-items:center;justify-content:center;min-height:56px;width:100%;padding:13px 18px;border:2px solid var(--gold);border-radius:999px;background:var(--gold);color:#1a1206;font:700 18px/1.3 Figtree,system-ui,sans-serif;text-decoration:none;cursor:pointer;touch-action:manipulation}
 .button[hidden]{display:none}
-.button:disabled{opacity:.6;cursor:wait}
-.button.secondary{min-height:52px;background:transparent;color:var(--deep)}
-.download-help{margin:12px 0 20px;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.button:disabled{opacity:.55;cursor:wait}
+.button.secondary{min-height:52px;border-color:var(--line);background:transparent;color:var(--text)}
+.download-help{margin:12px 0 20px;font-size:14px;line-height:1.45;color:var(--muted);overflow-wrap:anywhere}
 #download-help{margin-bottom:0}
-:is(button,a):focus-visible{outline:3px solid #162e65;outline-offset:4px}
+:is(button,a):focus-visible{outline:3px solid var(--gold-hi);outline-offset:4px}
 .photos{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:28px}
-article{min-width:0;padding:10px;border-radius:23px;background:var(--white);outline:3px dotted var(--white);outline-offset:5px;box-shadow:0 8px 0 var(--deep)}
-.photo-link{display:block;border-radius:15px;overflow:hidden}
+article{min-width:0;padding:10px;border:1px solid var(--line);border-radius:22px;background:var(--panel)}
+.photo-link{display:block;border-radius:14px;overflow:hidden}
 .photo-link img{display:block;width:100%;height:auto}
 nav{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:12px 2px 0;font-size:15px;font-weight:700}
-nav a{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:10px 8px;border-radius:999px;color:var(--deep);text-underline-offset:4px;touch-action:manipulation}
-nav a[data-photo-download]{padding-inline:17px;background:var(--deep);color:white;text-decoration:none}
-footer{max-width:520px;margin:34px auto 0;padding:14px 20px;border:1px solid #ffffff70;border-radius:20px;background:var(--deep);text-align:center;font-size:14px;line-height:1.5}
+nav a{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:10px 8px;border-radius:999px;color:var(--gold);text-underline-offset:4px;touch-action:manipulation}
+nav a[data-photo-download]{padding-inline:17px;background:var(--gold);color:#1a1206;text-decoration:none}
+footer{max-width:520px;margin:34px auto 0;padding:14px 20px;border:1px solid var(--line);border-radius:20px;text-align:center;font-size:14px;line-height:1.5;color:var(--muted)}
 footer p{margin:0}
-@media(max-width:840px){main{padding:24px max(18px,env(safe-area-inset-left)) max(36px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-right))}.sign{padding:14px;border-radius:28px}.sign-panel{gap:10px 12px;padding:14px;border-radius:16px}.event-name{font-size:14px}.actions{padding:18px;margin-bottom:30px}.photos{grid-template-columns:1fr;max-width:480px;margin:auto;gap:28px}article{padding:10px}.intro{font-size:19px}footer{margin-top:30px}}
+@media(max-width:840px){main{padding:24px max(18px,env(safe-area-inset-left)) max(36px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-right))}.brand{width:min(100%,340px)}.actions{padding:18px;margin-bottom:30px}.photos{grid-template-columns:1fr;max-width:480px;margin:auto;gap:28px}.intro{font-size:19px}footer{margin-top:30px}}
 </style></head>
 <body><main>
 <header>
-  <div class="sign"><div class="sign-panel">
-    <img class="brand" src="${assets.logo}" alt="Kids’ Diwali Celebration" width="1024" height="576">
-    <h1><span>Your</span><span>photos</span></h1>
-    <p class="event-name">${title}</p>
-  </div></div>
+  ${diwaliLogoSVG({ id: "gl", className: "brand" })}
+  <h1>Your photos</h1>
+  <p class="event-name">${title}</p>
   <p class="intro">All three photos, ready to keep.</p>
   <div class="actions">
     <button class="button" id="save-phone" type="button" aria-describedby="save-help" hidden disabled>Save to phone</button>

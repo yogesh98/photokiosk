@@ -58,7 +58,7 @@ class MockControl {
 }
 
 function galleryHarness(options: HarnessOptions = {}) {
-  const html = renderPhotoGallery("A day together");
+  const html = renderPhotoGallery();
   const controls = Object.fromEntries(["download-all", "download-help", "save-phone", "save-help"].map((id) => [id, new MockControl(html, id)]));
   const downloads: string[] = [];
   const links = Array.from(html.matchAll(/<a\b([^>]*\bdata-photo-download[^>]*)>/g), (match) => {

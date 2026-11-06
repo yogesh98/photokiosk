@@ -5,6 +5,8 @@ A local photo booth with green-screen background replacement and a USB camera. B
 - **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, photo overlays, background replacement, camera settings, Backblaze B2 sharing, Gmail, and the gallery with recipients and delivery history.
 - **Kiosk:** [http://127.0.0.1:3000/kiosk](http://127.0.0.1:3000/kiosk). Camera preview with background replacement, a five-second countdown, three photos with three-second intervals, review/retake, and optional QR sharing and email delivery after capture.
 
+The kiosk and the guests' download page use the Diwali 2026 "Light Beyond Lamps" logo and the Dehanna font, in black and gold. Gold light drifts behind the booth, a touch leaves sparkles, flames spiral around the camera when a guest starts, and sparkles carry each photo to its slot. The light is drawn on the screen only and never appears in the photos. On a slow computer open `/kiosk?fx=low` for half as much, or `/kiosk?fx=off` to turn it off. It is also off when the computer is set to reduce motion.
+
 ## Run
 
 Use Node.js 22 or later. Run the app on the **same computer** as the camera.
