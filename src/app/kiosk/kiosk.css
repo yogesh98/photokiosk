@@ -513,10 +513,12 @@
   padding: 0 0.08em;
   /* Static gold during the second it shows; the pop animation on its parent moves it. */
   background-position: 60% 0;
-  filter: drop-shadow(0 8px 0 rgba(0, 0, 0, 0.45)) drop-shadow(0 0 30px rgba(255, 190, 90, 0.65));
+  /* A short, soft shadow: a hard offset copy wider than the hairlines showed as
+     dark ghost lines under the 5's curve and top bar. */
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 30px rgba(255, 190, 90, 0.65));
 }
 .kiosk-countdown-overlay > strong > svg {
-  filter: drop-shadow(0 6px 0 rgba(0, 0, 0, 0.45)) drop-shadow(0 0 24px rgba(255, 190, 90, 0.7));
+  filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 24px rgba(255, 190, 90, 0.7));
 }
 .kiosk-flash {
   /* Fixed so the flash fills the whole screen, like a real booth. */
