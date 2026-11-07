@@ -184,6 +184,40 @@ test("one native movie process serves many cached frames without still or snapsh
   assert.deepEqual(fixture.children[0].signals, ["SIGINT"]);
 });
 
+test("a reader that has the newest frame waits for the next one instead of repeating it", async () => {
+  const fixture = fakeLive();
+  const session = await fixture.controller.startLive();
+  try {
+    const first = await fixture.controller.nextLiveFrame(session.id, -1);
+    assert.deepEqual(first.bytes, jpeg);
+    assert.ok(first.seq >= 1);
+    let settled = false;
+    const waiting = fixture.controller.nextLiveFrame(session.id, first.seq).then((frame) => { settled = true; return frame; });
+    await delay(30);
+    assert.equal(settled, false, "No newer frame exists yet");
+    const newer = Buffer.from([0xff, 0xd8, 0xff, 0xfe, 0, 3, 9, 0xff, 0xd9]);
+    fixture.children[0].stdout.write(newer);
+    const next = await waiting;
+    assert.deepEqual(next.bytes, newer);
+    assert.equal(next.seq, first.seq + 1);
+    assert.deepEqual((await fixture.controller.nextLiveFrame(session.id, 0)).bytes, newer, "A reader that is behind gets the newest frame at once");
+    assert.equal(fixture.commands.length, 1, "Waiting for frames never starts another camera process");
+  } finally { await fixture.controller.stopLive(session.id); }
+});
+
+test("a reader waiting for a frame is released when its request aborts or live view stops", async () => {
+  const fixture = fakeLive();
+  const session = await fixture.controller.startLive();
+  const { seq } = await fixture.controller.nextLiveFrame(session.id, -1);
+  const request = new AbortController();
+  const cancelled = fixture.controller.nextLiveFrame(session.id, seq, request.signal);
+  request.abort();
+  await assert.rejects(cancelled, { code: "camera_cancelled" });
+  const waiting = fixture.controller.nextLiveFrame(session.id, seq);
+  await fixture.controller.stopLive(session.id);
+  await assert.rejects(waiting, { status: 410 });
+});
+
 test("stale IDs cannot start, renew, read, or stop a different live session", async () => {
   const fixture = fakeLive();
   const old = await fixture.controller.startLive();
@@ -343,22 +377,30 @@ test("live HTTP handlers protect locality, forward start cancellation, and GET r
     assert.equal((await handler(new Request("http://remote.example/api/camera/live", { method }))).status, 403);
     assert.equal((await handler(new Request("http://localhost:3000/api/camera/live", { method, headers: { origin: "https://evil.example" } }))).status, 403);
   }
-  const original = { startLive: camera.startLive, liveFrame: camera.liveFrame, stopLive: camera.stopLive };
+  const original = { startLive: camera.startLive, nextLiveFrame: camera.nextLiveFrame, stopLive: camera.stopLive };
   const id = randomUUID();
   const calls = [];
   camera.startLive = async (signal) => { calls.push(["start", signal]); return { id, model: "Canon EOS 5D Mark IV" }; };
-  camera.liveFrame = (requested) => { calls.push(["frame", requested]); return jpeg; };
+  camera.nextLiveFrame = async (requested, after, signal) => {
+    calls.push(["frame", requested, after, signal]);
+    return { bytes: jpeg, seq: 4 };
+  };
   camera.stopLive = async (requested) => { calls.push(["stop", requested]); };
   try {
     const request = new Request("http://localhost:3000/api/camera/live", { method: "POST" });
     assert.deepEqual(await (await POST(request)).json(), { id, model: "Canon EOS 5D Mark IV" });
     assert.equal(calls[0][1], request.signal);
-    const image = await GET(new Request(`http://localhost:3000/api/camera/live?id=${id}`));
+    const imageRequest = new Request(`http://localhost:3000/api/camera/live?id=${id}`);
+    const image = await GET(imageRequest);
     assert.deepEqual(Buffer.from(await image.arrayBuffer()), jpeg);
     assert.equal(image.headers.get("Cache-Control"), "no-store, max-age=0");
+    assert.equal(image.headers.get("X-Frame-Seq"), "4");
+    assert.deepEqual(calls[1].slice(1), [id, -1, imageRequest.signal], "Older clients without after= get the newest frame at once");
+    await GET(new Request(`http://localhost:3000/api/camera/live?id=${id}&after=3`));
+    assert.equal(calls[2][2], 3);
     const stopped = await DELETE(new Request("http://localhost:3000/api/camera/live", { method: "DELETE", body: JSON.stringify({ id }) }));
     assert.equal(stopped.status, 200);
-    assert.deepEqual(calls.map(([method]) => method), ["start", "frame", "stop"]);
+    assert.deepEqual(calls.map(([method]) => method), ["start", "frame", "frame", "stop"]);
     assert.equal((await DELETE(new Request("http://localhost:3000/api/camera/live", { method: "DELETE", body: "{" }))).status, 400);
   } finally { Object.assign(camera, original); }
 });

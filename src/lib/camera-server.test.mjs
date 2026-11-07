@@ -106,7 +106,7 @@ test("high-resolution capture preserves camera files, returns JPEG, and removes 
   const command = calls.find(({ args }) => args.includes("--capture-image-and-download"));
   assert.ok(command.args.includes("--keep"));
   assert.ok(!command.args.includes("--no-keep"));
-  assert.equal(command.timeoutMs, 60_000);
+  assert.equal(command.timeoutMs, 12_000, "A missed live-view focus must not stall a guest for libgphoto2's 90 s wait");
   assert.equal(directories.length, 1);
   await assert.rejects(access(directories[0]), { code: "ENOENT" });
 });
@@ -141,15 +141,77 @@ test("a camera that rejects wide autofocus setup still takes one photo and skips
   assert.deepEqual(captures.map((args) => args.includes("afmethod=LiveMulti")), [true, false, false]);
 });
 
-test("a failed shutter after autofocus setup is never retried", async () => {
+// Captured from the 5D Mark IV: One-Shot AF found no focus, so the camera
+// ignored the press. No photo exists, so pressing again cannot double-shoot.
+const noFocus = "*** Error ***\nCanon EOS Capture failed to release: Perhaps no focus?\nERROR: Could not capture image.\n";
+const refusedPress = "*** Error ***\nCanon EOS Full-Press failed (0x2019: PTP Device Busy)\nERROR: Could not capture image.\n";
+
+test("a refused shutter is retried once, then reported as a focus problem on a working connection", async () => {
   let shutters = 0;
   const controller = new CameraController(async (args, options) => {
     if (args.includes("--auto-detect")) return { stdout: detection, stderr: "" };
+    if (args.includes("--summary")) return { stdout: "", stderr: "" };
     shutters++;
-    return failWithDiagnostics("", "*** Error ***\nCanon EOS Capture failed to release: Perhaps no focus?\n", options);
+    return failWithDiagnostics("", noFocus, options);
   });
-  await assert.rejects(controller.capture(), { code: "camera_command" });
-  assert.equal(shutters, 1);
+  await assert.rejects(controller.capture(), (error) => {
+    assert.equal(error.code, "camera_release");
+    assert.equal(error.status, 503);
+    assert.match(error.message, /couldn't take the photo/);
+    assert.match(error.details, /Perhaps no focus/);
+    assert.match(error.details, /in front of the camera/);
+    return true;
+  });
+  assert.equal(shutters, 2, "One retry, never an endless loop");
+  const status = await controller.getStatus();
+  assert.equal(status.connected, true, "A refused shutter must not report the camera as disconnected");
+});
+
+test("Canon's busy full-press refusal is retried as a shutter refusal, not blamed on another app", async () => {
+  assert.equal((await failWithDiagnostics("", refusedPress).catch((error) => error)).code, "camera_release");
+  let shutters = 0;
+  const files = [];
+  const controller = new CameraController(async (args, options) => {
+    if (args.includes("--auto-detect")) return { stdout: detection, stderr: "" };
+    if (++shutters === 1) return failWithDiagnostics("", refusedPress, options);
+    const filename = args[args.indexOf("--filename") + 1].replace("%n", "1").replace("%C", "JPG");
+    files.push(path.basename(filename));
+    await writeFile(filename, jpeg);
+    return { stdout: "", stderr: "" };
+  });
+  assert.deepEqual(await controller.capture(), jpeg);
+  assert.equal(shutters, 2);
+  assert.deepEqual(files, ["capture-2-1.JPG"], "The retry writes its own file names");
+});
+
+test("a still that never arrives is abandoned at its deadline and retried instead of resetting USB", async () => {
+  const deadlines = [];
+  let shutters = 0;
+  const controller = new CameraController(async (args, options) => {
+    if (args.includes("--auto-detect")) return { stdout: detection, stderr: "" };
+    deadlines.push(options.timeoutMs);
+    if (++shutters === 1) {
+      // The real runner, hung the way libgphoto2 waits for a photo the camera
+      // never took; the deadline is shortened only to keep the test fast.
+      return runGphoto(["-e", "setInterval(() => {}, 1000)"], { ...options, timeoutMs: 50 }, process.execPath);
+    }
+    await writeFile(args[args.indexOf("--filename") + 1].replace("%n", "1").replace("%C", "JPG"), jpeg);
+    return { stdout: "", stderr: "" };
+  });
+  assert.deepEqual(await controller.capture(), jpeg);
+  assert.deepEqual(deadlines, [12_000, 12_000]);
+});
+
+test("a camera that never releases fails within two deadlines with focus guidance, not a USB timeout", async () => {
+  const controller = new CameraController(async (args, options) => {
+    if (args.includes("--auto-detect")) return { stdout: detection, stderr: "" };
+    return runGphoto(["-e", "setInterval(() => {}, 1000)"], { ...options, timeoutMs: 50 }, process.execPath);
+  });
+  await assert.rejects(controller.capture(), (error) => {
+    assert.equal(error.code, "camera_release");
+    assert.match(error.details, /No photo arrived within 12 s/);
+    return true;
+  });
 });
 
 test("preview requests share one operation and do not fire the shutter", async () => {

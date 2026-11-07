@@ -26,6 +26,8 @@ interface CommandOptions {
   timeoutMs: number;
   cwd?: string;
   signal?: AbortSignal;
+  /** What exceeding timeoutMs means for this command; a USB timeout by default. */
+  timeoutError?: () => CameraError;
 }
 
 interface CommandResult {
@@ -44,6 +46,23 @@ const CONNECT_HELP =
   "Connect the camera to this computer with a USB data cable and turn it on. Close EOS Utility, Photos, Image Capture, and any other camera app. Use still-photo mode and JPEG or RAW+JPEG quality. For automatic exposure, set the camera to P with ISO Auto; use M when applying manual exposure settings from the app.";
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
 const MAX_JPEG_BYTES = 50 * 1024 * 1024;
+// A healthy shot (live view entry, autofocus, shutter, download) takes 2-3 s.
+// When live-view AF misses, the 5D Mark IV silently ignores the full press and
+// libgphoto2 waits about 90 s for a photo that never arrives. Give up well
+// before that, so the shot can be retried instead of stalling the guest.
+const STILL_CAPTURE_TIMEOUT_MS = 12_000;
+const STILL_CAPTURE_ATTEMPTS = 2;
+const RELEASE_HELP =
+  "Make sure guests are in front of the camera with enough light. A plain backdrop with nobody in front gives autofocus nothing to lock on. If this keeps happening, switch the camera off and on, or set the lens to MF and focus on where guests stand.";
+
+function shutterNotReleased(details?: string): CameraError {
+  return new CameraError(
+    "The camera couldn't take the photo. It may not have been able to focus. Please try again.",
+    "camera_release",
+    503,
+    details ? `${details}\n${RELEASE_HELP}` : RELEASE_HELP,
+  );
+}
 // The shutter's half-press autofocuses. In live view it uses the wide-area
 // FlexiZone - Multi method; viewfinder AF points cannot be changed over USB.
 const WIDE_AUTOFOCUS_ARGS = [
@@ -112,7 +131,7 @@ export function runGphoto(
     };
     options.signal?.addEventListener("abort", abort, { once: true });
     const timeout = setTimeout(() => {
-      failure ??= new CameraError(
+      failure ??= options.timeoutError?.() ?? new CameraError(
         "The camera did not respond in time. Check its USB connection and wake it up, then try again.",
         "camera_timeout",
         504,
@@ -165,6 +184,7 @@ export function runGphoto(
         const diagnostic = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
         const detail = diagnostic.slice(0, 1500);
         const kind = classifyGphotoFailure(diagnostic);
+        if (kind === "release") return reject(shutterNotReleased(detail));
         return reject(
           new CameraError(
             kind === "busy"
@@ -310,7 +330,9 @@ export class CameraController {
     if (
       failure.status !== 400 &&
       failure.status !== 409 &&
-      failure.code !== "camera_cancelled"
+      failure.code !== "camera_cancelled" &&
+      // A refused shutter is a focus problem on a working USB connection.
+      failure.code !== "camera_release"
     ) {
       if (this.selected && (failure.code === "camera_io" || failure.code === "camera_timeout"))
         this.recoveryCamera = this.selected;
@@ -513,6 +535,23 @@ export class CameraController {
     return session.stream.latest;
   }
 
+  /**
+   * The newest frame after `after`, waiting briefly for the camera to deliver
+   * one. Readers then pace themselves on fresh frames instead of a fixed sleep
+   * that either repeats frames or leaves the camera's 30 fps unused.
+   */
+  async nextLiveFrame(id: unknown, after: number, signal?: AbortSignal): Promise<{ bytes: Buffer; seq: number }> {
+    let bytes = this.liveFrame(id);
+    const stream = this.live!.stream;
+    if (Number.isSafeInteger(after) && after >= stream.frameSeq) {
+      await stream.waitForFrameAfter(after, 2000, signal);
+      assertCameraRequestActive(signal);
+      // The session may have ended or been replaced while this reader waited.
+      bytes = this.liveFrame(id);
+    }
+    return { bytes, seq: this.live!.stream.frameSeq };
+  }
+
   async stopLive(id: unknown): Promise<void> {
     this.validateLiveId(id);
     if (!this.live || this.live.id !== id) {
@@ -562,12 +601,15 @@ export class CameraController {
     const camera = this.selected ?? (await this.detect(signal));
     assertCameraRequestActive(signal);
     const directory = await mkdtemp(path.join(tmpdir(), "photokiosk-camera-"));
+    // Each attempt writes its own names, so a retry never collides with (or
+    // returns) anything an earlier attempt left behind.
+    let attempt = 1;
     const runCapture = (autofocus: boolean) =>
       this.run(
         [
           ...this.cameraArgs(camera),
           "--filename",
-          path.join(directory, preview ? "preview.jpg" : "capture-%n.%C"),
+          path.join(directory, preview ? "preview.jpg" : `capture-${attempt}-%n.%C`),
           "--force-overwrite",
           ...(preview
             ? ["--capture-preview"]
@@ -577,11 +619,22 @@ export class CameraController {
                 "--capture-image-and-download",
               ]),
         ],
-        { timeoutMs: preview ? 15_000 : 60_000, cwd: directory, signal },
+        preview
+          ? { timeoutMs: 15_000, cwd: directory, signal }
+          : {
+              timeoutMs: STILL_CAPTURE_TIMEOUT_MS,
+              cwd: directory,
+              signal,
+              // A downloaded photo arrives within a second of the shutter, so
+              // a still that outlives this deadline was never taken. It is a
+              // refused shutter to retry, not a USB fault to reset.
+              timeoutError: () => shutterNotReleased(
+                `No photo arrived within ${STILL_CAPTURE_TIMEOUT_MS / 1000} s of the shutter press.`,
+              ),
+            },
       );
-    try {
-      assertCameraRequestActive(signal);
-      const autofocus = !preview && !this.autofocusRejected.has(camera.model);
+    const shootStill = async () => {
+      const autofocus = !this.autofocusRejected.has(camera.model);
       try {
         await runCapture(autofocus);
       } catch (error) {
@@ -592,11 +645,29 @@ export class CameraController {
         assertCameraRequestActive(signal);
         await runCapture(false);
       }
+    };
+    try {
+      assertCameraRequestActive(signal);
+      if (preview) await runCapture(false);
+      else {
+        for (;; attempt++) {
+          try {
+            await shootStill();
+            break;
+          } catch (error) {
+            if (attempt >= STILL_CAPTURE_ATTEMPTS || recognizedCameraError(error)?.code !== "camera_release")
+              throw error;
+            // The camera ignored the press, so no photo exists and another
+            // press cannot double-shoot. Autofocus often locks on the next try.
+            assertCameraRequestActive(signal);
+          }
+        }
+      }
       assertCameraRequestActive(signal);
       const filename = preview
         ? "preview.jpg"
         : (await readdir(directory)).find((name) =>
-            /^capture-\d+\.jpe?g$/i.test(name),
+            new RegExp(`^capture-${attempt}-\\d+\\.jpe?g$`, "i").test(name),
           );
       if (!filename) {
         throw new CameraError(
@@ -763,12 +834,13 @@ export function cameraErrorResponse(error: unknown): Response {
   );
 }
 
-export function cameraJpegResponse(bytes: Buffer): Response {
+export function cameraJpegResponse(bytes: Buffer, headers: Record<string, string> = {}): Response {
   return new Response(new Uint8Array(bytes), {
     headers: {
       "Content-Type": "image/jpeg",
       "Cache-Control": "no-store, max-age=0",
       "X-Content-Type-Options": "nosniff",
+      ...headers,
     },
   });
 }

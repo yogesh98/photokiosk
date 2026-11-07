@@ -176,11 +176,15 @@ test("one explicit start reads multiple cached frames and shares one active prom
         return Response.json({ id });
       }
       if (method === "GET") {
-        assert.equal(url, `/api/camera/live?id=${encodeURIComponent(id)}`);
+        // Each read asks for a frame newer than the last one it received.
+        const after = readSignals.length === 0 ? -1 : readSignals.length * 10;
+        assert.equal(url, `/api/camera/live?id=${encodeURIComponent(id)}&after=${after}`);
         assert.ok(options.signal instanceof AbortSignal);
         assert.equal(options.signal.aborted, false);
         readSignals.push(options.signal);
-        return jpeg(`frame ${frames.length + 1}`);
+        return new Response(`frame ${frames.length + 1}`, {
+          headers: { "Content-Type": "image/jpeg", "X-Frame-Seq": String(readSignals.length * 10) },
+        });
       }
       assert.equal(method, "DELETE");
       assert.deepEqual(JSON.parse(options.body), { id });
@@ -398,11 +402,12 @@ test("an explicit restart uses a new ID and never reuses a previous preview's cl
       const method = options.method || "GET";
       calls.push({ url, method, body: options.body });
       if (method === "POST") return Response.json({ id: `preview-${++starts}` });
-      if (method === "GET") return jpeg(url);
+      // A frame number from the earlier session must not carry into the next.
+      if (method === "GET") return new Response(url, { headers: { "Content-Type": "image/jpeg", "X-Frame-Seq": "7" } });
       return Response.json({ stopped: true });
     },
     onFrame: async (blob) => {
-      assert.equal(await blob.text(), `/api/camera/live?id=preview-${starts}`);
+      assert.equal(await blob.text(), `/api/camera/live?id=preview-${starts}&after=-1`);
       received[starts - 1].resolve();
     },
     onError: (error) => errors.push(error),
@@ -418,7 +423,7 @@ test("an explicit restart uses a new ID and never reuses a previous preview's cl
   await preview.stop();
   await second;
   assert.deepEqual(calls.filter(({ method }) => method === "GET").map(({ url }) => url), [
-    "/api/camera/live?id=preview-1", "/api/camera/live?id=preview-2",
+    "/api/camera/live?id=preview-1&after=-1", "/api/camera/live?id=preview-2&after=-1",
   ]);
   assert.deepEqual(calls.filter(({ method }) => method === "DELETE").map(({ body }) => JSON.parse(body)), [
     { id: "preview-1" }, { id: "preview-2" },

@@ -24,17 +24,27 @@ async function fail(response: Response): Promise<never> {
   );
 }
 
-function waitForFrame(signal: AbortSignal) {
-  return new Promise<void>((resolve, reject) => {
+// The camera streams 30 fps. The server holds each request until a newer frame
+// exists, so this only caps how much keying work the kiosk's CPU takes on.
+const PREVIEW_FRAME_INTERVAL_MS = 1000 / 15;
+
+function createFramePacer(intervalMs = PREVIEW_FRAME_INTERVAL_MS) {
+  let last = 0;
+  return (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
     signal.throwIfAborted();
+    const delay = Math.max(0, intervalMs - (performance.now() - last));
     const abort = () => { clearTimeout(timer); reject(signal.reason); };
-    const timer = setTimeout(() => { signal.removeEventListener("abort", abort); resolve(); }, 150);
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      last = performance.now();
+      resolve();
+    }, delay);
     signal.addEventListener("abort", abort, { once: true });
   });
 }
 
 /** The caller starts hardware; optional kiosk recovery acquires a fresh session. */
-export function createCanonLiveView({ request = fetch, onFrame, onError, wait = waitForFrame, reconnect }: LiveViewOptions) {
+export function createCanonLiveView({ request = fetch, onFrame, onError, wait = createFramePacer(), reconnect }: LiveViewOptions) {
   let controller: AbortController | null = null;
   let flight: Promise<void> | null = null;
   let readiness: Promise<void> | null = null;
@@ -73,12 +83,15 @@ export function createCanonLiveView({ request = fetch, onFrame, onError, wait = 
             const liveId: string = body.id;
             id = liveId;
             current.signal.throwIfAborted();
+            let seq = -1;
             while (!current.signal.aborted) {
-              const frame = await request(`/api/camera/live?id=${encodeURIComponent(liveId)}`, {
+              const frame = await request(`/api/camera/live?id=${encodeURIComponent(liveId)}&after=${seq}`, {
                 cache: "no-store",
                 signal: AbortSignal.any([current.signal, AbortSignal.timeout(10000)]),
               });
               if (!frame.ok) await fail(frame);
+              const frameSeq = Number(frame.headers.get("X-Frame-Seq"));
+              if (Number.isSafeInteger(frameSeq)) seq = frameSeq;
               const blob = await frame.blob();
               current.signal.throwIfAborted();
               retryable = false;

@@ -105,9 +105,12 @@ export class GphotoLiveView {
   readonly ready: Promise<Buffer>;
   readonly closed: Promise<void>;
   latest: Buffer | null = null;
+  /** Counts frames, so a reader can wait for one newer than it last saw. */
+  frameSeq = 0;
   failure: CameraError | null = null;
   stopping = false;
   ended = false;
+  private frameWaiters = new Set<() => void>();
   private child: LiveChild;
   private stderr = Buffer.alloc(0);
   private firstFrame = false;
@@ -130,6 +133,8 @@ export class GphotoLiveView {
     const parser = new JpegFrameParser((frame) => {
       if (this.stopping || this.ended) return;
       this.latest = frame; // Drop every older frame instead of building a queue.
+      this.frameSeq++;
+      this.wakeFrameWaiters();
       clearTimeout(this.frameTimer);
       this.frameTimer = setTimeout(() => {
         void this.stop(new CameraError("Canon live preview stopped delivering frames. Stop and start preview to retry.", "camera_timeout", 504));
@@ -172,6 +177,7 @@ export class GphotoLiveView {
       clearTimeout(this.termTimer);
       clearTimeout(this.killTimer);
       parser.clear();
+      this.wakeFrameWaiters();
       ownedChildren.delete(this.child);
       if (!this.firstFrame) this.rejectReady(this.failure ?? new CameraError("Live preview was stopped.", "camera_cancelled", 499));
       this.resolveClosed();
@@ -181,10 +187,35 @@ export class GphotoLiveView {
   private stopGraceMs: number;
   private killGraceMs: number;
 
+  /**
+   * Resolve once a frame newer than `seq` exists, the stream stops, the
+   * signal aborts, or `timeoutMs` passes. Callers re-check state afterwards.
+   */
+  waitForFrameAfter(seq: number, timeoutMs: number, signal?: AbortSignal): Promise<void> {
+    if (this.frameSeq > seq || this.stopping || this.ended || signal?.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", done);
+        this.frameWaiters.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, timeoutMs);
+      timer.unref();
+      signal?.addEventListener("abort", done, { once: true });
+      this.frameWaiters.add(done);
+    });
+  }
+
+  private wakeFrameWaiters() {
+    for (const wake of [...this.frameWaiters]) wake();
+  }
+
   stop(error?: CameraError): Promise<void> {
     if (this.ended || this.stopping) return this.closed;
     this.stopping = true;
     this.failure = error ?? null;
+    this.wakeFrameWaiters();
     clearTimeout(this.startupTimer);
     clearTimeout(this.frameTimer);
     this.child.kill("SIGINT");

@@ -10,7 +10,7 @@ export class CameraError extends Error {
   }
 }
 
-export type GphotoFailureKind = "busy" | "timeout" | "io" | "other";
+export type GphotoFailureKind = "release" | "busy" | "timeout" | "io" | "other";
 
 /**
  * Classify gphoto2 diagnostics for still commands and the live stream alike.
@@ -18,6 +18,11 @@ export type GphotoFailureKind = "busy" | "timeout" | "io" | "other";
  * another app's claim must never trigger a USB reset.
  */
 export function classifyGphotoFailure(diagnostic: string): GphotoFailureKind {
+  // The camera refused the shutter (One-Shot AF found no focus, or the body
+  // could not release yet), so no photo was taken. Canon reports some of these
+  // as "PTP Device Busy", which must not be mistaken for another app's claim.
+  if (/Perhaps no focus|failed to release|(?:Half|Full)-Press failed/i.test(diagnostic))
+    return "release";
   if (
     /could not\s+(?:claim\b|detach\s+(?:the\s+)?kernel\s+driver)|claim[^\r\n]*(?:USB|device|interface)|detach[^\r\n]*kernel|(?:camera|device)[^\r\n]*busy|PTP[^\r\n]*busy/i.test(
       diagnostic,
@@ -44,7 +49,7 @@ export function recognizedCameraError(error: unknown): CameraError | null {
     typeof candidate.code !== "string" || ![
       "camera_error", "camera_cancelled", "camera_timeout", "gphoto_unavailable",
       "camera_process", "camera_in_use", "camera_command", "camera_busy", "camera_io",
-      "camera_disconnected", "camera_ambiguous", "camera_configuration",
+      "camera_disconnected", "camera_ambiguous", "camera_configuration", "camera_release",
       "invalid_configuration", "invalid_camera_image", "jpeg_required", "camera_live_expired",
     ].includes(candidate.code) ||
     typeof candidate.status !== "number" || ![400, 409, 410, 422, 499, 503, 504].includes(candidate.status) ||

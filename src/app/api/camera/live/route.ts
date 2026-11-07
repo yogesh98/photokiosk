@@ -12,7 +12,12 @@ export async function GET(request: Request) {
   try { assertLocalRequest(request); } catch (error) { return apiError(error); }
   try {
     // Reading a stale or absent ID must never acquire USB or start a process.
-    return cameraJpegResponse(camera.liveFrame(new URL(request.url).searchParams.get("id")));
+    const params = new URL(request.url).searchParams;
+    // `after` is the last frame number this reader has; omitting it returns
+    // the newest frame at once, as older clients expect.
+    const after = params.has("after") ? Number(params.get("after")) : -1;
+    const { bytes, seq } = await camera.nextLiveFrame(params.get("id"), after, request.signal);
+    return cameraJpegResponse(bytes, { "X-Frame-Seq": String(seq) });
   } catch (error) { return cameraErrorResponse(error); }
 }
 
