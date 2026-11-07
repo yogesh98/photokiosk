@@ -328,6 +328,21 @@ export function CameraSettings({
                   </p>
                 </div>
                 <label className="field">
+                  Photo capture
+                  <select
+                    value={draft.captureMode ?? "live"}
+                    onChange={(e) =>
+                      setDraft({
+                        ...draft,
+                        captureMode: e.target.value as KioskSettings["camera"]["captureMode"],
+                      })
+                    }
+                  >
+                    <option value="live">Live-view frame (instant, never refused; 960 × 640)</option>
+                    <option value="still">Full still (shutter and autofocus; can be refused)</option>
+                  </select>
+                </label>
+                <label className="field">
                   Exposure control
                   <select
                     value={draft.exposureMode}

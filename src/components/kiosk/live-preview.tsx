@@ -25,6 +25,8 @@ export interface PreviewStatus {
 
 /** Final photos are composited at this width; the Canon's 6720 px stills are decoded straight to it. */
 const CAPTURE_WIDTH = 2400;
+/** A live-view frame is 960 x 640; it is saved at 1.5x so it does not look tiny on a phone. */
+const LIVE_CAPTURE_WIDTH = 1440;
 
 interface LivePreviewProps {
   settings: KioskSettings;
@@ -120,6 +122,8 @@ export function LivePreview({
   const sourceAbortRef = useRef<AbortController | null>(null);
   const previewFlightRef = useRef<Promise<void> | null>(null);
   const canonFrameRef = useRef<ImageBitmap | null>(null);
+  // A frame being saved as a photo; new frames must not close it underneath the compositor.
+  const heldFrameRef = useRef<ImageBitmap | null>(null);
   const canonLiveRef = useRef<ReturnType<typeof createCanonLiveView> | null>(null);
   const canonMayResumeRef = useRef(false);
   const canonAutoPausedRef = useRef(false);
@@ -212,7 +216,7 @@ export function LivePreview({
       }
     });
     return flight;
-  }, []);
+  }, [markNotReady]);
 
   function startCanonLiveView() {
     if (!enabled || !isCanon || !allowCanonPreview || !canonLiveRef.current ||
@@ -271,7 +275,7 @@ export function LivePreview({
           setCanonReconnecting(null);
           setCameraError(null);
         }
-        previous?.close();
+        if (previous && previous !== heldFrameRef.current) previous.close();
       },
       onError: (error, { retrying }) => {
         if (!current) return;
@@ -325,7 +329,7 @@ export function LivePreview({
       canonFrameRef.current?.close();
       canonFrameRef.current = null;
     };
-  }, [enabled, isCanon, beginCanonLiveView]);
+  }, [enabled, isCanon, beginCanonLiveView, markNotReady]);
 
   useEffect(() => {
     let current = true;
@@ -518,6 +522,7 @@ export function LivePreview({
     sourceKey,
     backgroundLayer,
     overlayLayer,
+    markNotReady,
   ]);
 
   const capture = useCallback(
@@ -594,6 +599,31 @@ export function LivePreview({
       };
       if (currentSettings.camera.mode !== "canon") return takePhoto();
 
+      if (currentSettings.camera.captureMode !== "still") {
+        // The photo is the frame the guest is looking at. Live view keeps
+        // running, so nothing is stopped, refocused, or restarted.
+        const frame = canonFrameRef.current;
+        if (!frame) {
+          capturingRef.current = false;
+          throw new Error("The camera preview has no frame yet. Please try again.");
+        }
+        heldFrameRef.current = frame;
+        try {
+          signal.throwIfAborted();
+          await composite({
+            source: frame, sourceWidth: frame.width, sourceHeight: frame.height,
+            output, width: LIVE_CAPTURE_WIDTH, settings: currentSettings,
+            background: backdrop, overlay: overlayImage, signal,
+          });
+          signal.throwIfAborted();
+          return output.toDataURL("image/jpeg", 0.92);
+        } finally {
+          heldFrameRef.current = null;
+          if (canonFrameRef.current !== frame) frame.close();
+          capturingRef.current = false;
+        }
+      }
+
       const live = canonLiveRef.current;
       const isCurrent = () => Boolean(
         live && canonLiveRef.current === live && canonMayResumeRef.current &&
@@ -637,7 +667,7 @@ export function LivePreview({
         setCanonTakingPhoto(false);
       }
     },
-    [sourceReady, sceneLoading, sceneError, sceneRendered, backgroundLayer, overlayLayer, beginCanonLiveView],
+    [sourceReady, sceneLoading, sceneError, sceneRendered, backgroundLayer, overlayLayer, beginCanonLiveView, markNotReady],
   );
 
   const error = cameraError || sceneError;

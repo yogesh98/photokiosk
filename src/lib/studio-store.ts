@@ -71,6 +71,9 @@ type LegacySettings = Omit<KioskSettings, "backgroundMode"> & {
   backgroundReference?: unknown;
 };
 
+function isCameraCaptureMode(value: unknown): value is KioskSettings["camera"]["captureMode"] {
+  return value === "live" || value === "still";
+}
 function isCameraExposureMode(value: unknown): value is CameraExposureMode {
   return value === "auto" || value === "manual";
 }
@@ -211,6 +214,11 @@ async function withStore<T>(
     }
     if (state.settings.b2 === undefined) {
       state.settings.b2 = structuredClone(DEFAULT_SETTINGS.b2);
+      changed = true;
+    }
+    // Booths saved before live-frame capture existed take the reliable path.
+    if (!isCameraCaptureMode(state.settings.camera.captureMode)) {
+      state.settings.camera.captureMode = DEFAULT_SETTINGS.camera.captureMode;
       changed = true;
     }
     if (state.b2ApplicationKey === undefined) {
@@ -362,6 +370,11 @@ export async function updateSettings(input: unknown): Promise<KioskSettings> {
         if (!isCameraExposureMode(camera.exposureMode))
           throw new StudioError("Choose auto or manual camera exposure.");
         settings.camera.exposureMode = camera.exposureMode;
+      }
+      if ("captureMode" in camera) {
+        if (!isCameraCaptureMode(camera.captureMode))
+          throw new StudioError("Choose live-view frame or full still capture.");
+        settings.camera.captureMode = camera.captureMode;
       }
       for (const key of [
         "deviceId",

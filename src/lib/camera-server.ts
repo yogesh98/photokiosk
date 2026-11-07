@@ -75,6 +75,9 @@ function shutterNotReleased(details?: string): CameraError {
     details ? `${details}\n${RELEASE_HELP}` : RELEASE_HELP,
   );
 }
+// Live view keeps focusing on whoever is in front of the camera, so a saved
+// live-view frame is sharp and a still's half-press starts close to focus.
+const CONTINUOUS_AF_ARGS = ["--set-config", "continuousaf=On"] as const;
 // The shutter's half-press autofocuses. In live view it uses the wide-area
 // FlexiZone - Multi method; viewfinder AF points cannot be changed over USB.
 const WIDE_AUTOFOCUS_ARGS = [
@@ -307,6 +310,7 @@ export class CameraController {
   private recoveryCamera: DetectedCamera | null = null;
   private lastUsbResetAt: number | null = null;
   private autofocusRejected = new Set<string>();
+  private continuousAfRejected = new Set<string>();
 
   constructor(private readonly run: GphotoRunner = runGphoto, private readonly liveOptions: CameraLiveOptions = {}) {}
 
@@ -501,9 +505,15 @@ export class CameraController {
         // Reboots, USB reconnection, and --reset can all change the USB address.
         const detected = await this.detect(signal);
         assertCameraRequestActive(signal);
+        const continuousAf = !this.continuousAfRejected.has(detected.model);
         let stream: GphotoLiveView;
-        try { stream = new GphotoLiveView(this.cameraArgs(detected), this.liveOptions.factory, this.liveOptions.stream); }
-        catch (error) { throw this.rememberError(error); }
+        try {
+          stream = new GphotoLiveView(
+            [...this.cameraArgs(detected), ...(continuousAf ? CONTINUOUS_AF_ARGS : [])],
+            this.liveOptions.factory,
+            this.liveOptions.stream,
+          );
+        } catch (error) { throw this.rememberError(error); }
         const session: LiveSession = { id: randomUUID(), camera: detected, stream };
         this.live = session;
         void stream.closed.then(() => {
@@ -524,6 +534,13 @@ export class CameraController {
           return { id: session.id, model: detected.model };
         } catch (error) {
           await stream.stop();
+          // A camera without this setting fails before its first frame; live
+          // view then starts without it, this time and from now on.
+          if (continuousAf && /continuousaf/i.test(recognizedCameraError(error)?.details ?? "")) {
+            this.continuousAfRejected.add(detected.model);
+            this.live = null;
+            throw new CameraError("Live view is restarting without continuous autofocus.", "camera_busy", 409, recognizedCameraError(error)?.details);
+          }
           throw this.rememberError(error);
         } finally {
           signal?.removeEventListener("abort", abort);

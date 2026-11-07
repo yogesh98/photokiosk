@@ -170,7 +170,7 @@ test("one native movie process serves many cached frames without still or snapsh
   try {
     assert.equal(session.model, "Canon EOS 5D Mark IV");
     assert.equal(fixture.commands.length, 1);
-    assert.deepEqual(fixture.commands[0], ["--camera", session.model, "--port", "usb:001,008", "--quiet", "--capture-movie", "--stdout"]);
+    assert.deepEqual(fixture.commands[0], ["--camera", session.model, "--port", "usb:001,008", "--set-config", "continuousaf=On", "--quiet", "--capture-movie", "--stdout"]);
     for (let frame = 0; frame < 20; frame++) assert.deepEqual(fixture.controller.liveFrame(session.id), jpeg);
     assert.deepEqual(await fixture.controller.preview(undefined, { retry: true }), jpeg);
     assert.equal((await fixture.controller.getStatus()).connected, true);
@@ -495,4 +495,31 @@ test("an open frame stream keeps the lease alive even while its reader is slow",
     await delay(250);
     assert.deepEqual(fixture.children[0].signals, ["SIGINT"], "once the reader is gone, the lease stops the stream");
   } finally { await fixture.controller.stopLive(session.id).catch(() => {}); }
+});
+
+test("a camera that rejects continuous autofocus gets live view without it from then on", async () => {
+  let starts = 0;
+  const fixture = fakeLive({ emitFrame: false });
+  const plainFactory = fixture.factory;
+  const controller = new CameraController(async (args) => {
+    if (args.includes("--auto-detect")) return { stdout: detection, stderr: "" };
+    return { stdout: "", stderr: "" };
+  }, {
+    factory: (args) => {
+      starts++;
+      const child = plainFactory(args);
+      if (args.includes("continuousaf=On")) {
+        queueMicrotask(() => { child.stderr.write("*** Error ***\nThe property 'continuousaf' / 0xd1d3 was not set (0x2002: General Error).\n"); child.close(1); });
+      } else queueMicrotask(() => child.stdout.write(jpeg));
+      return child;
+    },
+    leaseMs: 5000, stream: { startupMs: 1000, frameTimeoutMs: 1000, stopGraceMs: 10, killGraceMs: 10 },
+  });
+  await assert.rejects(controller.startLive(), { status: 409 });
+  const session = await controller.startLive();
+  try {
+    assert.equal(starts, 2);
+    assert.ok(!fixture.commands[1].includes("continuousaf=On"), "the second start leaves the setting out");
+    assert.deepEqual(controller.liveFrame(session.id), jpeg);
+  } finally { await controller.stopLive(session.id); }
 });
