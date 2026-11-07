@@ -26,15 +26,33 @@ if (!shutdownState.__photokioskLiveChildren.size) {
 
 /** Parse JPEG segments, including embedded thumbnails and progressive scans. */
 export class JpegFrameParser {
-  private buffer = Buffer.alloc(0);
+  // One growable buffer: appending copies each chunk once, where concatenating
+  // a fresh Buffer per chunk copied the whole partial frame again every time.
+  private storage = Buffer.allocUnsafe(512 * 1024);
+  private buffer: Buffer = this.storage.subarray(0, 0);
   private cursor = 0;
   private started = false;
   private entropy = false;
 
   constructor(private readonly onFrame: (frame: Buffer) => void, private readonly maxBytes = 12 * 1024 * 1024) {}
 
+  private append(bytes: Buffer) {
+    const needed = this.buffer.length + bytes.length;
+    const aliased = this.buffer.buffer === this.storage.buffer && this.buffer.byteOffset === this.storage.byteOffset;
+    if (needed > this.storage.length) {
+      const grown = Buffer.allocUnsafe(Math.max(this.storage.length * 2, needed));
+      grown.set(this.buffer, 0);
+      this.storage = grown;
+    } else if (!aliased) {
+      // The retained tail points into the middle of storage; move it to the front.
+      this.storage.copyWithin(0, this.buffer.byteOffset - this.storage.byteOffset, this.buffer.byteOffset - this.storage.byteOffset + this.buffer.length);
+    }
+    this.storage.set(bytes, this.buffer.length);
+    this.buffer = this.storage.subarray(0, needed);
+  }
+
   push(bytes: Buffer) {
-    this.buffer = Buffer.concat([this.buffer, bytes]);
+    this.append(bytes);
     while (true) {
       if (!this.started) {
         const start = this.buffer.indexOf(Buffer.from([0xff, 0xd8]));
@@ -85,7 +103,7 @@ export class JpegFrameParser {
     if (this.buffer.length > this.maxBytes) throw this.tooLarge();
   }
 
-  clear() { this.buffer = Buffer.alloc(0); }
+  clear() { this.buffer = this.storage.subarray(0, 0); }
   // A corrupt stream is a transport fault, not a bad client request: report a
   // retryable status so the kiosk starts a fresh stream instead of stalling.
   private invalid() { return new CameraError("The camera returned a malformed live preview frame.", "invalid_camera_image", 503); }

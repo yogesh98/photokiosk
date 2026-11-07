@@ -165,21 +165,27 @@
   height: auto;
   overflow: visible;
 }
-.kiosk-logo .dl-flame {
-  transform-box: view-box;
-  transform-origin: 373px 232px;
+/* The glow and flame sit over the still art and move as whole layers. */
+.kiosk-logo-glow,
+.kiosk-logo-flame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.kiosk-logo-glow svg,
+.kiosk-logo-flame svg {
+  position: absolute;
+  inset: 0;
+  height: 100%;
+}
+/* Origins are the flame base (373, 232) and halo centre (373, 200) in the 490 x 334 viewBox. */
+.kiosk-logo-flame {
+  transform-origin: 74.3% 67.7%;
   animation: kiosk-flicker 2.4s ease-in-out infinite;
 }
-.kiosk-logo .dl-glow {
-  transform-box: view-box;
-  transform-origin: 373px 200px;
+.kiosk-logo-glow {
+  transform-origin: 74.3% 58.1%;
   animation: kiosk-glow 2.4s ease-in-out infinite;
-}
-.kiosk-logo .dl-rays {
-  animation: kiosk-rays 3.2s ease-in-out infinite;
-}
-.kiosk-logo .dl-sheen {
-  animation: kiosk-sheen 7s ease-in-out 1s infinite;
 }
 
 /* ---------- Physical keyboard network shortcut ---------- */
@@ -293,7 +299,7 @@
   line-height: 1.05;
   animation:
     kiosk-rise 0.55s var(--k-ease) both,
-    kiosk-shimmer 7s linear infinite;
+    kiosk-shimmer 7s steps(140) infinite;
 }
 .kiosk-heading > p {
   margin: 14px 0 0;
@@ -379,7 +385,7 @@
   font-size: clamp(56px, 10vw, 112px);
   line-height: 1;
   text-align: left;
-  animation: kiosk-shimmer 7s linear infinite;
+  animation: kiosk-shimmer 7s steps(140) infinite;
 }
 
 /* ---------- Camera preview ---------- */
@@ -691,7 +697,7 @@
   filter: drop-shadow(0 0 10px rgba(255, 210, 120, 0.7));
 }
 .kiosk-start-label {
-  animation: kiosk-shimmer 5s linear infinite;
+  animation: kiosk-shimmer 5s steps(100) infinite;
 }
 /* A ring of light that keeps rippling out from the start button. */
 .kiosk-start-button::after {
@@ -985,7 +991,7 @@
   font-weight: 400;
   font-size: clamp(60px, 10vw, 108px);
   line-height: 1.05;
-  animation: kiosk-shimmer 7s linear infinite;
+  animation: kiosk-shimmer 7s steps(140) infinite;
 }
 .kiosk-email-form label {
   font-size: clamp(24px, 3.5vw, 38px);
@@ -1224,7 +1230,7 @@
   line-height: 1.05;
   animation:
     kiosk-rise 0.6s var(--k-ease) 2.6s both,
-    kiosk-shimmer 7s linear infinite;
+    kiosk-shimmer 7s steps(140) infinite;
 }
 .kiosk-success h1 ~ p {
   animation: kiosk-rise 0.6s var(--k-ease) 2.7s both;
@@ -1327,7 +1333,7 @@
   font-weight: 400;
   font-size: clamp(52px, 8vw, 88px);
   line-height: 1.1;
-  animation: kiosk-shimmer 7s linear infinite;
+  animation: kiosk-shimmer 7s steps(140) infinite;
 }
 .kiosk-loading p {
   margin: 0;
@@ -1415,6 +1421,7 @@
     transform: rotate(360deg);
   }
 }
+/* Stepped at 20 Hz: the sheen still glides, but the text repaints a third as often. */
 @keyframes kiosk-shimmer {
   from {
     background-position: 0% 0;

@@ -256,7 +256,8 @@ export function LivePreview({
     const live = createCanonLiveView({
       reconnect: { allowed: mayAutoConnect },
       onFrame: async (blob, signal) => {
-        const next = await createImageBitmap(blob);
+        // Camera JPEGs have no alpha and are already sRGB; skipping those passes keeps decode cheap.
+        const next = await createImageBitmap(blob, { premultiplyAlpha: "none", colorSpaceConversion: "none" });
         if (!current || signal.aborted) { next.close(); return; }
         const previous = canonFrameRef.current;
         canonFrameRef.current = next;
