@@ -22,7 +22,6 @@ header{text-align:center}
 .brand .dl-glow,.brand .dl-sheen{display:none}
 h1{margin:22px 0 0;font:400 clamp(52px,14vw,92px)/1.02 Dehanna,Didot,Georgia,serif;color:var(--gold)}
 .event-name{margin:10px 0 0;font-size:13px;font-weight:700;letter-spacing:.32em;text-transform:uppercase;color:var(--muted);overflow-wrap:anywhere}
-.intro{margin:18px 0 0;font-size:20px;font-weight:700;line-height:1.4}
 .actions{max-width:520px;margin:26px auto 40px;padding:22px;border:1px solid var(--line);border-radius:26px;background:var(--panel)}
 .button{display:flex;align-items:center;justify-content:center;min-height:56px;width:100%;padding:13px 18px;border:2px solid var(--gold);border-radius:999px;background:var(--gold);color:#1a1206;font:700 18px/1.3 Figtree,system-ui,sans-serif;text-decoration:none;cursor:pointer;touch-action:manipulation}
 .button[hidden]{display:none}
@@ -40,14 +39,13 @@ nav a{display:inline-flex;align-items:center;justify-content:center;min-height:4
 nav a[data-photo-download]{padding-inline:17px;background:var(--gold);color:#1a1206;text-decoration:none}
 footer{max-width:520px;margin:34px auto 0;padding:14px 20px;border:1px solid var(--line);border-radius:20px;text-align:center;font-size:14px;line-height:1.5;color:var(--muted)}
 footer p{margin:0}
-@media(max-width:840px){main{padding:24px max(18px,env(safe-area-inset-left)) max(36px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-right))}.brand{width:min(100%,340px)}.actions{padding:18px;margin-bottom:30px}.photos{grid-template-columns:1fr;max-width:480px;margin:auto;gap:28px}.intro{font-size:19px}footer{margin-top:30px}}
+@media(max-width:840px){main{padding:24px max(18px,env(safe-area-inset-left)) max(36px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-right))}.brand{width:min(100%,340px)}.actions{padding:18px;margin-bottom:30px}.photos{grid-template-columns:1fr;max-width:480px;margin:auto;gap:28px}footer{margin-top:30px}}
 </style></head>
 <body><main>
 <header>
   ${diwaliLogoSVG({ id: "gl", className: "brand" })}
   <h1>Your photos</h1>
   <p class="event-name">${title}</p>
-  <p class="intro">All three photos, ready to keep.</p>
   <div class="actions">
     <button class="button" id="save-phone" type="button" aria-describedby="save-help" hidden disabled>Save to phone</button>
     <p class="download-help" id="save-help" role="status">Open a photo and press and hold it to see your phone's save options.</p>

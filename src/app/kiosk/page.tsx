@@ -348,6 +348,8 @@ export default function KioskPage() {
     setPhotos([]);
     setSession(null);
     setError(null);
+    // A failed session can leave a later number behind; the first frame must show the 5.
+    setCountdown(5);
     setStage("capturing");
     const button = rectOf(startButtonRef.current);
     const preview = rectOf(previewRef.current);
@@ -365,12 +367,18 @@ export default function KioskPage() {
         signal: controller.signal,
         preparePhoto: async (number, signal) => {
           setPhotoNumber(number);
+          const sceneUrl = plannedBackgrounds[number - 1]?.url;
+          const readScene = () => ({ ...captureRef.current, error: cameraErrorRef.current });
+          const live = readScene();
+          // Photo 1's scene is already live from the idle preview. Showing the
+          // "preparing" spinner then would only flash it for a frame right where
+          // the 5 pops in, so the spinner is kept for scenes that must load.
+          if (live.capture && live.backgroundUrl === sceneUrl && !live.error) {
+            preparedCapture = live.capture;
+            return;
+          }
           setPreparingPhoto(true);
-          preparedCapture = await waitForCaptureScene(
-            () => ({ ...captureRef.current, error: cameraErrorRef.current }),
-            plannedBackgrounds[number - 1]?.url,
-            signal,
-          );
+          preparedCapture = await waitForCaptureScene(readScene, sceneUrl, signal);
           setPreparingPhoto(false);
         },
         capture: (signal, options) => {
@@ -752,14 +760,6 @@ export default function KioskPage() {
                   </button>
                 )}
                 <div className="kiosk-review-actions">
-                  <button
-                    type="button"
-                    onClick={reset}
-                    disabled={stage === "sending" || stage === "saving"}
-                  >
-                    <RefreshCw size={32} strokeWidth={2.4} />
-                    Retake
-                  </button>
                   <button
                     type="button"
                     className="is-done"
