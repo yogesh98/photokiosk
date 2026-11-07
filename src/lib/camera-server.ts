@@ -58,42 +58,42 @@ export function encodeLiveFrame(bytes: Uint8Array, seq: number): Uint8Array {
   chunk.set(bytes, 8);
   return chunk;
 }
-// A healthy shot (live view entry, autofocus, shutter, download) takes 2-3 s.
-// When live-view AF misses, the 5D Mark IV silently ignores the full press and
-// libgphoto2 waits about 90 s for a photo that never arrives. Give up well
-// before that, so the shot can be retried instead of stalling the guest.
-const STILL_CAPTURE_TIMEOUT_MS = 12_000;
+// A healthy shot (release, exposure, 13-megapixel download) takes 1.1-1.3 s on
+// the 5D Mark IV. If no photo has arrived well after that, the camera did not
+// take one; give up so the shot can be retried, or the kiosk can fall back to
+// the live-view frame, instead of waiting out libgphoto2's 90 s.
+const STILL_CAPTURE_TIMEOUT_MS = 5_000;
 const STILL_CAPTURE_ATTEMPTS = 2;
 const RELEASE_HELP =
-  "Make sure guests are in front of the camera with enough light. A plain backdrop with nobody in front gives autofocus nothing to lock on. If this keeps happening, switch the camera off and on, or set the lens to MF and focus on where guests stand.";
+  "Check that the camera is in still-photo mode with a card or internal-RAM capture target, and that nothing on the camera is waiting for input. If this keeps happening, switch the camera off and on. The kiosk keeps the live-view frame as the photo when a still fails.";
 
 function shutterNotReleased(details?: string): CameraError {
   return new CameraError(
-    "The camera couldn't take the photo. It may not have been able to focus. Please try again.",
+    "The camera couldn't take the photo in time. Please try again.",
     "camera_release",
     503,
     details ? `${details}\n${RELEASE_HELP}` : RELEASE_HELP,
   );
 }
 // Live view keeps focusing on whoever is in front of the camera, so a saved
-// live-view frame is sharp and a still's half-press starts close to focus.
+// live-view frame is sharp and the lens is already in focus when a still is taken.
 const CONTINUOUS_AF_ARGS = ["--set-config", "continuousaf=On"] as const;
-// The shutter's half-press autofocuses. In live view it uses the wide-area
-// FlexiZone - Multi method; viewfinder AF points cannot be changed over USB.
-const WIDE_AUTOFOCUS_ARGS = [
-  "--set-config-value",
-  "viewfinder=1",
-  "--set-config-value",
-  "afmethod=LiveMulti",
+// Canon's "press completely, no AF" release. Continuous AF has already focused
+// the lens during live view, and skipping the half-press means the camera
+// cannot refuse the shutter the way One-Shot AF does when it finds no focus.
+// Waiting for the file event returns as soon as the photo has downloaded.
+const NO_AF_RELEASE_ARGS = [
+  "--set-config",
+  "eosremoterelease=Immediate",
+  "--set-config",
+  "eosremoterelease=Release Full",
+  "--wait-event-and-download=FILEADDED",
 ] as const;
 
 /** gphoto2 stops at the first failed action, so these failures precede the shutter. */
-function rejectedAutofocusSetup(error: unknown): boolean {
+function rejectedRemoteRelease(error: unknown): boolean {
   const failure = recognizedCameraError(error);
-  return (
-    failure?.code === "camera_command" &&
-    /\b(?:viewfinder|afmethod|LiveMulti)\b/i.test(failure.details ?? "")
-  );
+  return failure?.code === "camera_command" && /eosremoterelease|Immediate/i.test(failure.details ?? "");
 }
 
 function cancelledCameraRequest(): CameraError {
@@ -309,7 +309,7 @@ export class CameraController {
   private lastLive: { id: string; failure: CameraError | null } | null = null;
   private recoveryCamera: DetectedCamera | null = null;
   private lastUsbResetAt: number | null = null;
-  private autofocusRejected = new Set<string>();
+  private remoteReleaseRejected = new Set<string>();
   private continuousAfRejected = new Set<string>();
 
   constructor(private readonly run: GphotoRunner = runGphoto, private readonly liveOptions: CameraLiveOptions = {}) {}
@@ -687,7 +687,7 @@ export class CameraController {
     // Each attempt writes its own names, so a retry never collides with (or
     // returns) anything an earlier attempt left behind.
     let attempt = 1;
-    const runCapture = (autofocus: boolean) =>
+    const runCapture = (noAutofocusRelease: boolean) =>
       this.run(
         [
           ...this.cameraArgs(camera),
@@ -696,11 +696,7 @@ export class CameraController {
           "--force-overwrite",
           ...(preview
             ? ["--capture-preview"]
-            : [
-                ...(autofocus ? WIDE_AUTOFOCUS_ARGS : []),
-                "--keep",
-                "--capture-image-and-download",
-              ]),
+            : ["--keep", ...(noAutofocusRelease ? NO_AF_RELEASE_ARGS : ["--capture-image-and-download"])]),
         ],
         preview
           ? { timeoutMs: 15_000, cwd: directory, signal }
@@ -717,14 +713,14 @@ export class CameraController {
             },
       );
     const shootStill = async () => {
-      const autofocus = !this.autofocusRejected.has(camera.model);
+      const noAutofocusRelease = !this.remoteReleaseRejected.has(camera.model);
       try {
-        await runCapture(autofocus);
+        await runCapture(noAutofocusRelease);
       } catch (error) {
-        if (!autofocus || !rejectedAutofocusSetup(error)) throw error;
-        // The shutter has not fired. Shoot with the camera's own AF settings
-        // and skip the rejected live-view setup for later photos.
-        this.autofocusRejected.add(camera.model);
+        if (!noAutofocusRelease || !rejectedRemoteRelease(error)) throw error;
+        // The shutter has not fired. This camera lacks the EOS remote release,
+        // so use the generic capture (with the camera's own autofocus) from now on.
+        this.remoteReleaseRejected.add(camera.model);
         assertCameraRequestActive(signal);
         await runCapture(false);
       }
@@ -741,7 +737,7 @@ export class CameraController {
             if (attempt >= STILL_CAPTURE_ATTEMPTS || recognizedCameraError(error)?.code !== "camera_release")
               throw error;
             // The camera ignored the press, so no photo exists and another
-            // press cannot double-shoot. Autofocus often locks on the next try.
+            // press cannot double-shoot.
             assertCameraRequestActive(signal);
           }
         }

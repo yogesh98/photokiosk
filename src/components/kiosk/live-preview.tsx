@@ -23,8 +23,8 @@ export interface PreviewStatus {
   renderer: "webgl" | "canvas2d" | null;
 }
 
-/** Final photos are composited at this width; the Canon's 6720 px stills are decoded straight to it. */
-const CAPTURE_WIDTH = 2400;
+/** Final photos are composited at this width (8.6 megapixels); the Canon's 4464 px stills are decoded straight to it. */
+const CAPTURE_WIDTH = 3600;
 /** A live-view frame is 960 x 640; it is saved at 1.5x so it does not look tiny on a phone. */
 const LIVE_CAPTURE_WIDTH = 1440;
 
@@ -625,6 +625,25 @@ export function LivePreview({
       }
 
       const live = canonLiveRef.current;
+      // Keep the last live frame through the still: if the camera does not
+      // deliver a photo, the guest still gets the frame they were looking at.
+      const fallbackFrame = canonFrameRef.current;
+      heldFrameRef.current = fallbackFrame;
+      const stillOrLiveFrame = async (stillSignal: AbortSignal) => {
+        try {
+          return await takePhoto();
+        } catch (error) {
+          if (stillSignal.aborted || !fallbackFrame) throw error;
+          stillSignal.throwIfAborted();
+          await composite({
+            source: fallbackFrame, sourceWidth: fallbackFrame.width, sourceHeight: fallbackFrame.height,
+            output, width: LIVE_CAPTURE_WIDTH, settings: currentSettings,
+            background: backdrop, overlay: overlayImage, signal: stillSignal,
+          });
+          stillSignal.throwIfAborted();
+          return output.toDataURL("image/jpeg", 0.92);
+        }
+      };
       const isCurrent = () => Boolean(
         live && canonLiveRef.current === live && canonMayResumeRef.current &&
         sourceAbortRef.current?.signal === sourceSignal &&
@@ -640,7 +659,7 @@ export function LivePreview({
           hasNextPhoto: options?.resumePreview === true,
           isCurrent,
           stopLiveView: () => live.stop(),
-          capture: takePhoto,
+          capture: stillOrLiveFrame,
           startLiveView: () => {
             minimumFrameVersion = canonFrameVersionRef.current + 1;
             beginCanonLiveView(live, signal);
@@ -663,6 +682,8 @@ export function LivePreview({
           },
         });
       } finally {
+        heldFrameRef.current = null;
+        if (fallbackFrame && canonFrameRef.current !== fallbackFrame) fallbackFrame.close();
         capturingRef.current = false;
         setCanonTakingPhoto(false);
       }

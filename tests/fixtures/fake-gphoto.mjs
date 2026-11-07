@@ -81,7 +81,8 @@ if (args.includes("--auto-detect")) {
   emitFrame();
 } else if (
   args.includes("--capture-preview") ||
-  args.includes("--capture-image-and-download")
+  args.includes("--capture-image-and-download") ||
+  args.some((arg) => arg.startsWith("--wait-event-and-download"))
 ) {
   const filenameIndex = args.indexOf("--filename");
   if (filenameIndex < 0 || !args[filenameIndex + 1]) {
@@ -96,7 +97,7 @@ if (args.includes("--auto-detect")) {
   );
   await copyFile(fixture, filename);
   if (
-    args.includes("--capture-image-and-download") &&
+    (args.includes("--capture-image-and-download") || args.includes("eosremoterelease=Immediate")) &&
     process.env.STILL_TEST_CAPTURE_LOG
   ) {
     await appendFile(

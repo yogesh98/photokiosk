@@ -216,7 +216,7 @@ async function withStore<T>(
       state.settings.b2 = structuredClone(DEFAULT_SETTINGS.b2);
       changed = true;
     }
-    // Booths saved before live-frame capture existed take the reliable path.
+    // Booths saved before the capture mode existed get the default.
     if (!isCameraCaptureMode(state.settings.camera.captureMode)) {
       state.settings.camera.captureMode = DEFAULT_SETTINGS.camera.captureMode;
       changed = true;
@@ -679,7 +679,8 @@ export async function createSession(input: unknown): Promise<PhotoSession> {
     backgroundNames = body.backgroundNames.map((name) => text(name, "Background name", 80, false)) as [string, string, string];
   }
   const photos = await Promise.all(
-    body.photos.map((photo) => normalizeImage(decodePhoto(photo), 3000)),
+    // Composited photos arrive at 3600 x 2400 (8.6 megapixels); never grow them.
+    body.photos.map((photo) => normalizeImage(decodePhoto(photo), 3600)),
   );
   if (
     photos.reduce((total, photo) => total + photo.byteLength, 0) >

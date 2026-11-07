@@ -330,7 +330,7 @@ export function CameraSettings({
                 <label className="field">
                   Photo capture
                   <select
-                    value={draft.captureMode ?? "live"}
+                    value={draft.captureMode ?? "still"}
                     onChange={(e) =>
                       setDraft({
                         ...draft,
@@ -338,8 +338,8 @@ export function CameraSettings({
                       })
                     }
                   >
-                    <option value="live">Live-view frame (instant, never refused; 960 × 640)</option>
-                    <option value="still">Full still (shutter and autofocus; can be refused)</option>
+                    <option value="still">Full still, 13 MP (no-AF release; live frame if it fails)</option>
+                    <option value="live">Live-view frame only (instant; 960 × 640)</option>
                   </select>
                 </label>
                 <label className="field">

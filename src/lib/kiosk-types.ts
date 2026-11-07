@@ -1,10 +1,11 @@
 export type CameraMode = "browser" | "canon";
 export type CameraExposureMode = "auto" | "manual";
 /**
- * How a Canon photo is taken. "live" keeps the frame the guest is looking at:
- * no shutter, no mirror, no autofocus gamble, and live view never stops.
- * "still" fires the shutter for a full-resolution photo, which the camera
- * refuses whenever its autofocus cannot lock.
+ * How a Canon photo is taken. "still" fires the shutter with Canon's
+ * no-autofocus release (continuous AF has focused the lens during live view)
+ * for a full-resolution photo, and falls back to the live-view frame if the
+ * camera does not deliver one. "live" always keeps the frame the guest is
+ * looking at: no shutter, no mirror, live view never stops, 960 x 640.
  */
 export type CameraCaptureMode = "live" | "still";
 export type BackgroundMode = "green-screen" | "off";
@@ -101,7 +102,7 @@ export const DEFAULT_SETTINGS: KioskSettings = {
   camera: {
     mode: "browser",
     exposureMode: "auto",
-    captureMode: "live",
+    captureMode: "still",
     deviceId: "",
     iso: "400",
     aperture: "5.6",

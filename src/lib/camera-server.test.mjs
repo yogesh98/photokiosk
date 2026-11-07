@@ -47,6 +47,9 @@ test("PTP I/O errors are transport failures rather than rejected exposure settin
   await assert.rejects(controller.configure({ iso: "400", aperture: "5.6", shutterSpeed: "1/125" }), { code: "camera_io" });
 });
 
+/** Either shutter path: the EOS no-AF release or the generic capture fallback. */
+const isStill = (args) => args.includes("--wait-event-and-download=FILEADDED") || args.includes("--capture-image-and-download");
+
 function fakeCamera(options = {}) {
   const calls = [];
   const directories = [];
@@ -103,42 +106,45 @@ test("a detected camera claimed by another app is not reported connected", async
 test("high-resolution capture preserves camera files, returns JPEG, and removes its temporary directory", async () => {
   const { controller, calls, directories } = fakeCamera();
   assert.deepEqual(await controller.capture(), jpeg);
-  const command = calls.find(({ args }) => args.includes("--capture-image-and-download"));
+  const command = calls.find(({ args }) => args.includes("--wait-event-and-download=FILEADDED"));
   assert.ok(command.args.includes("--keep"));
   assert.ok(!command.args.includes("--no-keep"));
-  assert.equal(command.timeoutMs, 12_000, "A missed live-view focus must not stall a guest for libgphoto2's 90 s wait");
+  assert.ok(!command.args.includes("--capture-image-and-download"), "the EOS release replaces the generic capture");
+  assert.equal(command.timeoutMs, 5_000, "A photo the camera never took must not stall a guest for libgphoto2's 90 s wait");
   assert.equal(directories.length, 1);
   await assert.rejects(access(directories[0]), { code: "ENOENT" });
 });
 
-test("still capture autofocuses with the wide live-view AF method before the shutter", async () => {
+test("still capture presses the shutter without autofocus and waits only for the file", async () => {
   const { controller, calls } = fakeCamera();
   await controller.capture();
-  const { args } = calls.find(({ args }) => args.includes("--capture-image-and-download"));
-  const viewfinder = args.indexOf("viewfinder=1");
-  const afMethod = args.indexOf("afmethod=LiveMulti");
-  assert.equal(args[viewfinder - 1], "--set-config-value");
-  assert.equal(args[afMethod - 1], "--set-config-value");
-  assert.ok(viewfinder < afMethod && afMethod < args.indexOf("--capture-image-and-download"));
+  const { args } = calls.find(({ args }) => args.includes("--wait-event-and-download=FILEADDED"));
+  const press = args.indexOf("eosremoterelease=Immediate");
+  const release = args.indexOf("eosremoterelease=Release Full");
+  assert.equal(args[press - 1], "--set-config");
+  assert.equal(args[release - 1], "--set-config");
+  assert.ok(press < release && release < args.indexOf("--wait-event-and-download=FILEADDED"));
+  assert.ok(!args.some((arg) => /afmethod|viewfinder/.test(arg)), "no live-view autofocus setup before the shutter");
   await controller.preview();
   const preview = calls.find(({ args }) => args.includes("--capture-preview"));
-  assert.ok(!preview.args.includes("afmethod=LiveMulti"), "snapshots never move the lens");
+  assert.ok(!preview.args.some((arg) => arg.includes("eosremoterelease")), "snapshots never press the shutter");
 });
 
-test("a camera that rejects wide autofocus setup still takes one photo and skips it afterwards", async () => {
+test("a camera without the EOS remote release still takes one photo and uses the generic capture afterwards", async () => {
   const captures = [];
   const controller = new CameraController(async (args, options) => {
     if (args.includes("--auto-detect")) return { stdout: detection, stderr: "" };
     captures.push(args);
-    if (args.includes("afmethod=LiveMulti")) {
-      return failWithDiagnostics("", "*** Error ***\nChoice LiveMulti not found within list of choices.\n*** Error (-2: 'Bad parameters') ***\n", options);
+    if (args.includes("eosremoterelease=Immediate")) {
+      return failWithDiagnostics("", "*** Error ***\nFailed to set the value of widget 'eosremoterelease'.\n*** Error (-2: 'Bad parameters') ***\n", options);
     }
     await writeFile(args[args.indexOf("--filename") + 1].replace("%n", "1").replace("%C", "JPG"), jpeg);
     return { stdout: "", stderr: "" };
   });
   assert.deepEqual(await controller.capture(), jpeg);
   assert.deepEqual(await controller.capture(), jpeg);
-  assert.deepEqual(captures.map((args) => args.includes("afmethod=LiveMulti")), [true, false, false]);
+  assert.deepEqual(captures.map((args) => args.includes("eosremoterelease=Immediate")), [true, false, false]);
+  assert.ok(captures[1].includes("--capture-image-and-download"));
 });
 
 // Captured from the 5D Mark IV: One-Shot AF found no focus, so the camera
@@ -159,7 +165,7 @@ test("a refused shutter is retried once, then reported as a focus problem on a w
     assert.equal(error.status, 503);
     assert.match(error.message, /couldn't take the photo/);
     assert.match(error.details, /Perhaps no focus/);
-    assert.match(error.details, /in front of the camera/);
+    assert.match(error.details, /live-view frame/);
     return true;
   });
   assert.equal(shutters, 2, "One retry, never an endless loop");
@@ -199,7 +205,7 @@ test("a still that never arrives is abandoned at its deadline and retried instea
     return { stdout: "", stderr: "" };
   });
   assert.deepEqual(await controller.capture(), jpeg);
-  assert.deepEqual(deadlines, [12_000, 12_000]);
+  assert.deepEqual(deadlines, [5_000, 5_000]);
 });
 
 test("a camera that never releases fails within two deadlines with focus guidance, not a USB timeout", async () => {
@@ -209,7 +215,7 @@ test("a camera that never releases fails within two deadlines with focus guidanc
   });
   await assert.rejects(controller.capture(), (error) => {
     assert.equal(error.code, "camera_release");
-    assert.match(error.details, /No photo arrived within 12 s/);
+    assert.match(error.details, /No photo arrived within 5 s/);
     return true;
   });
 });
@@ -221,7 +227,7 @@ test("preview requests share one operation and do not fire the shutter", async (
   assert.deepEqual(second, jpeg);
   await controller.preview();
   assert.equal(calls.filter(({ args }) => args.includes("--capture-preview")).length, 1);
-  assert.equal(calls.filter(({ args }) => args.includes("--capture-image-and-download")).length, 0);
+  assert.equal(calls.filter(({ args }) => isStill(args)).length, 0);
 });
 
 test("capture is exclusive and new previews cannot queue in front of it", async () => {
@@ -250,7 +256,7 @@ test("capture is exclusive and new previews cannot queue in front of it", async 
   await Promise.all([preview, duplicatePreview, capture]);
   assert.equal(maximumActive, 1);
   assert.equal(calls.filter(({ args }) => args.includes("--capture-preview")).length, 1);
-  assert.equal(calls.filter(({ args }) => args.includes("--capture-image-and-download")).length, 1);
+  assert.equal(calls.filter(({ args }) => isStill(args)).length, 1);
 });
 
 test("pre-aborted captures do not detect a camera or start a shutter", async () => {
@@ -281,7 +287,7 @@ test("a cancelled queued capture skips its shutter without aborting a shared pre
   const previews = await Promise.all([firstPreview, sharedPreview]);
   await cancelled;
   assert.ok(previews.every((bytes) => bytes.equals(jpeg)));
-  assert.equal(calls.filter(({ args }) => args.includes("--capture-image-and-download")).length, 0);
+  assert.equal(calls.filter(({ args }) => isStill(args)).length, 0);
   assert.equal(calls.find(({ args }) => args.includes("--capture-preview")).signal.aborted, false);
   assert.deepEqual(await controller.capture(), jpeg);
   assert.equal(calls.filter(({ args }) => args.includes("--auto-detect")).length, 1, "cancelled queued work preserves the selected USB connection");
@@ -555,7 +561,7 @@ test("preview failure stays latched through status and settings until an explici
   assert.equal(calls.length, recoveredCalls, "A reconnected status must not resume preview");
   assert.deepEqual(await controller.preview(undefined, { retry: true }), jpeg);
   assert.equal(calls.filter(({ args }) => args.includes("--capture-preview")).length, 2);
-  assert.equal(calls.filter(({ args }) => args.includes("--capture-image-and-download")).length, 0);
+  assert.equal(calls.filter(({ args }) => isStill(args)).length, 0);
 });
 
 test("pre-aborted preview requests never detect or touch the camera", async () => {
