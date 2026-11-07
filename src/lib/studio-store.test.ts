@@ -774,7 +774,7 @@ describe("persistent booth data and Gmail delivery", { concurrency: false }, () 
     assert.equal(guest.headers.get("cache-control"), "no-store");
     const serialized = await guest.text();
     const payload = JSON.parse(serialized);
-    assert.deepEqual(Object.keys(payload).sort(), ["backgrounds", "overlays", "settings"]);
+    assert.deepEqual(Object.keys(payload).sort(), ["backgrounds", "build", "overlays", "settings"]);
     assert.equal(payload.settings.gmail.configured, true);
     for (const key of ["email", "senderName", "subject", "message"]) assert.equal(payload.settings.gmail[key], "");
     assert.equal(payload.backgrounds.length, 6);

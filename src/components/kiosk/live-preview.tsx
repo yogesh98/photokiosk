@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Camera, LoaderCircle, RefreshCw, VideoOff } from "lucide-react";
 import type { Background, KioskSettings, Overlay } from "@/lib/kiosk-types";
-import { createBackgroundCompositor } from "@/lib/background-compositor";
+import { compositorKind, createBackgroundCompositor } from "@/lib/background-compositor";
 import { requestCanonPhoto, waitForPreview } from "./capture-camera";
 import { createCanonLiveView } from "./canon-live-view";
 import { captureCanonWithLiveView } from "./canon-capture";
@@ -17,7 +17,14 @@ export interface PreviewStatus {
   loading: boolean;
   error: string | null;
   label: string;
+  /** Composited frames per second over the last second, once the preview is running. */
+  fps: number;
+  /** Whether frames are keyed on the GPU (webgl) or the CPU (canvas2d). */
+  renderer: "webgl" | "canvas2d" | null;
 }
+
+/** Final photos are composited at this width; the Canon's 6720 px stills are decoded straight to it. */
+const CAPTURE_WIDTH = 2400;
 
 interface LivePreviewProps {
   settings: KioskSettings;
@@ -120,7 +127,20 @@ export function LivePreview({
   const canonFrameVersionRef = useRef(0);
   const renderedCanonFrameRef = useRef(0);
   const capturingRef = useRef(false);
+  // One scratch canvas and compositor for every still, so each photo does not
+  // create (and later leak) a fresh GPU context.
+  const captureCanvasRef = useRef<{ canvas: HTMLCanvasElement; composite: ReturnType<typeof createBackgroundCompositor> } | null>(null);
+  const frameStampsRef = useRef<number[]>([]);
+  const [fps, setFps] = useState(0);
+  const [renderer, setRenderer] = useState<"webgl" | "canvas2d" | null>(null);
   const [cameraReady, setCameraReady] = useState(false);
+  // Mirrors cameraReady for the render loop, which republishes readiness only
+  // after something (a shutter, a restart, an error) has taken it away.
+  const cameraReadyRef = useRef(false);
+  const markNotReady = useCallback(() => {
+    cameraReadyRef.current = false;
+    setCameraReady(false);
+  }, []);
   const [readySourceKey, setReadySourceKey] = useState("");
   const [renderedBackgroundUrl, setRenderedBackgroundUrl] = useState<string | undefined | null>(null);
   const [renderedOverlayUrl, setRenderedOverlayUrl] = useState<string | undefined | null>(null);
@@ -180,7 +200,7 @@ export function LivePreview({
     setCanonLiveActive(true);
     setCanonReconnecting(null);
     setCameraError(null);
-    setCameraReady(false);
+    markNotReady();
     const flight = live.start(signal);
     previewFlightRef.current = flight;
     void flight.finally(() => {
@@ -210,7 +230,7 @@ export function LivePreview({
     canonFrameRef.current?.close();
     canonFrameRef.current = null;
     setHasCanonFrame(false);
-    setCameraReady(false);
+    markNotReady();
     setCanonLiveActive(false);
     setCanonReconnecting(null);
   }
@@ -243,17 +263,20 @@ export function LivePreview({
         canonFrameVersionRef.current++;
         sourceRef.current = next;
         sourceSizeRef.current = { width: next.width, height: next.height };
+        // At 30 fps, React state only changes on the first frame after a (re)start.
+        if (!previous) {
+          setHasCanonFrame(true);
+          setCanonStarting(false);
+          setCanonReconnecting(null);
+          setCameraError(null);
+        }
         previous?.close();
-        setHasCanonFrame(true);
-        setCanonStarting(false);
-        setCanonReconnecting(null);
-        setCameraError(null);
       },
       onError: (error, { retrying }) => {
         if (!current) return;
         canonMayResumeRef.current = mayAutoConnect();
         sourceRef.current = null;
-        setCameraReady(false);
+        markNotReady();
         setCanonStarting(false);
         if (retrying) {
           // A recoverable USB or server interruption is a loading state. As an
@@ -331,7 +354,17 @@ export function LivePreview({
     let lastBackground: HTMLImageElement | null = null;
     let lastOverlay: HTMLImageElement | null = null;
     let renderFailed = false;
+    // Scene and readiness state are published once per source/scene, not per frame.
+    let published = false;
     const composite = createBackgroundCompositor();
+    frameStampsRef.current = [];
+    const fpsTimer = setInterval(() => {
+      if (controller.signal.aborted) return;
+      const stamps = frameStampsRef.current;
+      const now = performance.now();
+      while (stamps.length && now - stamps[0] > 1000) stamps.shift();
+      setFps(stamps.length);
+    }, 1000);
     const retained = settings.camera.mode === "canon" ? canonFrameRef.current : null;
     sourceRef.current = retained;
     sourceSizeRef.current = retained ? { width: retained.width, height: retained.height } : { width: 0, height: 0 };
@@ -339,7 +372,7 @@ export function LivePreview({
       if (!controller.signal.aborted) {
         // Canon transport state belongs to the live-view effect. Resetting it
         // here ran after the kiosk's automatic start and hid "Starting…".
-        setCameraReady(false);
+        markNotReady();
         setCameraError(null);
         setProcessingFailed(false);
       }
@@ -367,9 +400,12 @@ export function LivePreview({
         settingsKey !== lastSettingsKey ||
         backdrop !== lastBackground ||
         overlayImage !== lastOverlay;
+      if (settingsKey !== lastSettingsKey || backdrop !== lastBackground || overlayImage !== lastOverlay) published = false;
+      // A webcam is sampled at up to 24 fps; Canon frames are drawn as they arrive (30 fps).
+      const due = settings.camera.mode !== "browser" || time - lastRenderTime >= 1000 / 24;
       if (
         !capturingRef.current && !renderFailed && sceneLoaded && changed && source && width && height &&
-        canvasRef.current && time - lastRenderTime >= 1000 / 24
+        canvasRef.current && due
       ) {
         lastRenderTime = time;
         const flight = composite({
@@ -386,16 +422,24 @@ export function LivePreview({
           lastBackground = backdrop;
           lastOverlay = overlayImage;
           renderedCanonFrameRef.current = frameVersion;
-          setCameraReady(true);
-          setReadySourceKey(sourceKey);
-          setRenderedBackgroundUrl(scene.loadedUrl);
-          setRenderedOverlayUrl(topLayer.loadedUrl);
+          const stamps = frameStampsRef.current;
+          stamps.push(time);
+          while (stamps.length && time - stamps[0] > 1000) stamps.shift();
+          if (!published || !cameraReadyRef.current) {
+            published = true;
+            cameraReadyRef.current = true;
+            setCameraReady(true);
+            setReadySourceKey(sourceKey);
+            setRenderedBackgroundUrl(scene.loadedUrl);
+            setRenderedOverlayUrl(topLayer.loadedUrl);
+            setRenderer(compositorKind(canvasRef.current));
+          }
         } catch (error) {
           if (!controller.signal.aborted) {
             renderFailed = true;
             setCameraError(readableCameraError(error));
             setProcessingFailed(true);
-            setCameraReady(false);
+            markNotReady();
           }
         } finally {
           if (renderFlightRef.current === flight) renderFlightRef.current = null;
@@ -438,7 +482,7 @@ export function LivePreview({
       track.addEventListener("ended", () => {
         if (!controller.signal.aborted) {
           sourceRef.current = null;
-          setCameraReady(false);
+          markNotReady();
           setCameraError(
             "The camera was disconnected. Reconnect it, then try again.",
           );
@@ -459,6 +503,7 @@ export function LivePreview({
     return () => {
       controller.abort();
       cancelAnimationFrame(animation);
+      clearInterval(fpsTimer);
       stream?.getTracks().forEach((track) => track.stop());
       if (video) video.srcObject = null;
       sourceRef.current = null;
@@ -494,8 +539,8 @@ export function LivePreview({
           "The camera is already taking a photo. Please wait a moment.",
         );
       capturingRef.current = true;
-      const output = document.createElement("canvas");
-      const composite = createBackgroundCompositor();
+      captureCanvasRef.current ??= { canvas: document.createElement("canvas"), composite: createBackgroundCompositor() };
+      const { canvas: output, composite } = captureCanvasRef.current;
       const backdrop = backgroundLayer.current.image;
       const overlayImage = overlayLayer.current.image;
       let photo: ImageBitmap | null = null;
@@ -508,11 +553,13 @@ export function LivePreview({
               signal,
               previewFlightRef.current,
             );
-            photo = await createImageBitmap(bytes);
+            // Decode the 30-megapixel still straight to the photo's size instead
+            // of holding a 120 MB bitmap and shrinking it afterwards.
+            photo = await createImageBitmap(bytes, { resizeWidth: CAPTURE_WIDTH, resizeQuality: "high" });
             signal.throwIfAborted();
             await composite({
               source: photo, sourceWidth: photo.width, sourceHeight: photo.height,
-              output, width: Math.min(2400, photo.width), settings: currentSettings,
+              output, width: Math.min(CAPTURE_WIDTH, photo.width), settings: currentSettings,
               background: backdrop, overlay: overlayImage, signal,
             });
           } else {
@@ -533,7 +580,7 @@ export function LivePreview({
               );
             await composite({
               source, sourceWidth: size.width, sourceHeight: size.height,
-              output, width: Math.min(2400, size.width), settings: currentSettings,
+              output, width: Math.min(CAPTURE_WIDTH, size.width), settings: currentSettings,
               background: backdrop, overlay: overlayImage, signal,
             });
           }
@@ -554,7 +601,7 @@ export function LivePreview({
       );
       let minimumFrameVersion = 0;
       setCanonTakingPhoto(true);
-      setCameraReady(false);
+      markNotReady();
       try {
         if (!live) throw new Error("Start Canon live preview before taking a photo.");
         return await captureCanonWithLiveView({
@@ -614,8 +661,8 @@ export function LivePreview({
     return () => onCaptureReady?.(null, backgroundUrl);
   }, [onCaptureReady, ready, capture, backgroundUrl]);
   useEffect(() => {
-    onStatusChange?.({ ready, loading, error, label });
-  }, [onStatusChange, ready, loading, error, label]);
+    onStatusChange?.({ ready, loading, error, label, fps: ready ? fps : 0, renderer });
+  }, [onStatusChange, ready, loading, error, label, fps, renderer]);
 
   return (
     <div

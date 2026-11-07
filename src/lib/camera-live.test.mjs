@@ -6,8 +6,9 @@ import { randomUUID } from "node:crypto";
 import { test } from "node:test";
 import { writeFile } from "node:fs/promises";
 import { JpegFrameParser, GphotoLiveView } from "./camera-live.ts";
-import { CameraController, CameraError, camera } from "./camera-server.ts";
+import { CameraController, CameraError, camera, encodeLiveFrame, LIVE_STREAM_CONTENT_TYPE, LIVE_STREAM_ERROR_SEQ } from "./camera-server.ts";
 import { POST, GET, DELETE } from "../app/api/camera/live/route.ts";
+import { GET as STREAM } from "../app/api/camera/live/stream/route.ts";
 
 const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 2, 0xff, 0xd9]);
 const detection = "Canon EOS 5D Mark IV     usb:001,008\n";
@@ -403,4 +404,95 @@ test("live HTTP handlers protect locality, forward start cancellation, and GET r
     assert.deepEqual(calls.map(([method]) => method), ["start", "frame", "frame", "stop"]);
     assert.equal((await DELETE(new Request("http://localhost:3000/api/camera/live", { method: "DELETE", body: "{" }))).status, 400);
   } finally { Object.assign(camera, original); }
+});
+
+function decodeStreamChunk(chunk) {
+  const view = Buffer.from(chunk);
+  const length = view.readUInt32BE(0);
+  const seq = view.readUInt32BE(4);
+  assert.equal(view.length, 8 + length, "one chunk carries exactly one frame");
+  return { seq, bytes: view.subarray(8) };
+}
+
+test("the frame stream sends the newest frame, then only newer ones, and ends with the stop error", async () => {
+  const fixture = fakeLive();
+  const session = await fixture.controller.startLive();
+  const reader = fixture.controller.liveFrameStream(session.id).getReader();
+  const first = decodeStreamChunk((await reader.read()).value);
+  assert.deepEqual(first.bytes, jpeg);
+  assert.ok(first.seq >= 1);
+  let settled = false;
+  const waiting = reader.read().then((result) => { settled = true; return result; });
+  await delay(30);
+  assert.equal(settled, false, "an unchanged frame is never repeated");
+  const newer = Buffer.from([0xff, 0xd8, 0xff, 0xfe, 0, 3, 9, 0xff, 0xd9]);
+  fixture.children[0].stdout.write(newer);
+  const second = decodeStreamChunk((await waiting).value);
+  assert.deepEqual(second.bytes, newer);
+  assert.equal(second.seq, first.seq + 1);
+  const ending = reader.read();
+  await fixture.controller.stopLive(session.id);
+  const last = decodeStreamChunk((await ending).value);
+  assert.equal(last.seq, LIVE_STREAM_ERROR_SEQ);
+  assert.equal(JSON.parse(last.bytes.toString("utf8")).status, 410);
+  assert.equal((await reader.read()).done, true);
+  assert.equal(fixture.commands.length, 1, "streaming never starts another camera process");
+});
+
+test("a cancelled frame stream stops waiting and a stale ID is refused before any frame is sent", async () => {
+  const fixture = fakeLive();
+  const session = await fixture.controller.startLive();
+  try {
+    const request = new AbortController();
+    const reader = fixture.controller.liveFrameStream(session.id, request.signal).getReader();
+    await reader.read();
+    const pending = reader.read();
+    request.abort();
+    assert.equal((await pending).done, true, "an aborted request ends the stream without an error chunk");
+    assert.throws(() => fixture.controller.liveFrameStream(randomUUID()), { status: 410 });
+    assert.throws(() => fixture.controller.liveFrameStream("nonsense"), { status: 400 });
+  } finally { await fixture.controller.stopLive(session.id); }
+});
+
+test("the stream route protects locality, forwards the request signal, and streams frames", async () => {
+  assert.equal((await STREAM(new Request("http://remote.example/api/camera/live/stream"))).status, 403);
+  const originalStream = camera.liveFrameStream;
+  const id = randomUUID();
+  const calls = [];
+  camera.liveFrameStream = (requested, signal) => {
+    calls.push([requested, signal]);
+    return new ReadableStream({
+      start(controller) { controller.enqueue(encodeLiveFrame(jpeg, 4)); controller.close(); },
+    });
+  };
+  try {
+    const request = new Request(`http://localhost:3000/api/camera/live/stream?id=${id}`);
+    const response = await STREAM(request);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("Content-Type"), LIVE_STREAM_CONTENT_TYPE);
+    assert.equal(response.headers.get("Cache-Control"), "no-store, max-age=0");
+    const frame = decodeStreamChunk(Buffer.from(await response.arrayBuffer()));
+    assert.deepEqual([frame.seq, frame.bytes], [4, jpeg]);
+    assert.deepEqual(calls, [[id, request.signal]]);
+    camera.liveFrameStream = () => { throw new CameraError("gone", "camera_live_expired", 410); };
+    assert.equal((await STREAM(new Request(`http://localhost:3000/api/camera/live/stream?id=${id}`))).status, 410);
+  } finally { camera.liveFrameStream = originalStream; }
+});
+
+test("an open frame stream keeps the lease alive even while its reader is slow", async () => {
+  const fixture = fakeLive({ leaseMs: 80 });
+  const session = await fixture.controller.startLive();
+  try {
+    const reader = fixture.controller.liveFrameStream(session.id).getReader();
+    await reader.read();
+    // Nobody reads for several lease periods; the connection alone keeps the camera.
+    await delay(300);
+    assert.equal(fixture.children[0].signals.length, 0, "the stream was not stopped by the lease");
+    fixture.children[0].stdout.write(Buffer.from([0xff, 0xd8, 0xff, 0xfe, 0, 3, 5, 0xff, 0xd9]));
+    const next = decodeStreamChunk((await reader.read()).value);
+    assert.notEqual(next.seq, LIVE_STREAM_ERROR_SEQ);
+    await reader.cancel();
+    await delay(250);
+    assert.deepEqual(fixture.children[0].signals, ["SIGINT"], "once the reader is gone, the lease stops the stream");
+  } finally { await fixture.controller.stopLive(session.id).catch(() => {}); }
 });

@@ -24,6 +24,8 @@ export async function GET(request: Request) {
         },
         backgrounds,
         overlays,
+        // Lets an open kiosk page notice a deploy and reload itself between guests.
+        build: process.env.NEXT_PUBLIC_KIOSK_BUILD ?? null,
       },
       { headers: { "Cache-Control": "no-store" } },
     );

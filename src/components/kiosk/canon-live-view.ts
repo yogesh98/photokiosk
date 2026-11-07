@@ -5,46 +5,73 @@ type LiveViewOptions = {
   onFrame: (frame: Blob, signal: AbortSignal) => Promise<void> | void;
   /** `retrying` is true only when automatic recovery will start a new session. */
   onError: (error: unknown, state: { retrying: boolean }) => void;
-  wait?: (signal: AbortSignal) => Promise<void>;
   reconnect?: {
     allowed: () => boolean;
     wait?: (attempt: number, signal: AbortSignal) => Promise<void>;
   };
+  /** How long the stream may go silent before it is treated as broken. */
+  stallMs?: number;
 };
 
 class LiveViewRequestError extends Error {
   constructor(message: string, readonly retryable: boolean) { super(message); }
 }
 
+const RETRYABLE_STATUS = (status: number) => [408, 409, 410, 429].includes(status) || status >= 500;
+
 async function fail(response: Response): Promise<never> {
   const body = await response.json().catch(() => null);
   throw new LiveViewRequestError(
     body?.error || "The Canon live preview stopped. Check the camera, then start preview again when ready.",
-    [408, 409, 410, 429].includes(response.status) || response.status >= 500,
+    RETRYABLE_STATUS(response.status),
   );
 }
 
-// The camera streams 30 fps. The server holds each request until a newer frame
-// exists, so this only caps how much keying work the kiosk's CPU takes on.
-const PREVIEW_FRAME_INTERVAL_MS = 1000 / 15;
+/** The frame number the server puts on a stream's final JSON error chunk. */
+export const LIVE_STREAM_ERROR_SEQ = 0xffffffff;
 
-function createFramePacer(intervalMs = PREVIEW_FRAME_INTERVAL_MS) {
-  let last = 0;
-  return (signal: AbortSignal) => new Promise<void>((resolve, reject) => {
-    signal.throwIfAborted();
-    const delay = Math.max(0, intervalMs - (performance.now() - last));
-    const abort = () => { clearTimeout(timer); reject(signal.reason); };
-    const timer = setTimeout(() => {
-      signal.removeEventListener("abort", abort);
-      last = performance.now();
-      resolve();
-    }, delay);
-    signal.addEventListener("abort", abort, { once: true });
-  });
+export interface LiveStreamFrame {
+  seq: number;
+  bytes: Uint8Array;
 }
 
+/**
+ * Splits the live stream's chunks (4-byte length, 4-byte frame number, then
+ * the JPEG) back into frames, whatever byte boundaries the network delivers.
+ */
+export function createLiveStreamParser() {
+  let buffer: Uint8Array = new Uint8Array(0);
+  return {
+    push(chunk: Uint8Array): LiveStreamFrame[] {
+      if (buffer.byteLength === 0) buffer = chunk;
+      else {
+        const joined = new Uint8Array(buffer.byteLength + chunk.byteLength);
+        joined.set(buffer, 0);
+        joined.set(chunk, buffer.byteLength);
+        buffer = joined;
+      }
+      const frames: LiveStreamFrame[] = [];
+      let offset = 0;
+      while (buffer.byteLength - offset >= 8) {
+        const view = new DataView(buffer.buffer, buffer.byteOffset + offset, 8);
+        const length = view.getUint32(0);
+        const seq = view.getUint32(4);
+        if (buffer.byteLength - offset - 8 < length) break;
+        frames.push({ seq, bytes: buffer.slice(offset + 8, offset + 8 + length) });
+        offset += 8 + length;
+      }
+      buffer = offset ? buffer.slice(offset) : buffer;
+      return frames;
+    },
+  };
+}
+
+const NOT_YET = Symbol("not yet");
+/** Lets reads of chunks the browser already holds resolve before giving up on them. */
+const settleSoon = () => new Promise<typeof NOT_YET>((resolve) => setTimeout(() => resolve(NOT_YET), 0));
+
 /** The caller starts hardware; optional kiosk recovery acquires a fresh session. */
-export function createCanonLiveView({ request = fetch, onFrame, onError, wait = createFramePacer(), reconnect }: LiveViewOptions) {
+export function createCanonLiveView({ request = fetch, onFrame, onError, reconnect, stallMs = 15000 }: LiveViewOptions) {
   let controller: AbortController | null = null;
   let flight: Promise<void> | null = null;
   let readiness: Promise<void> | null = null;
@@ -72,6 +99,7 @@ export function createCanonLiveView({ request = fetch, onFrame, onError, wait = 
           let id: string | undefined;
           let retryable = true;
           let retry = false;
+          let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
           try {
             const response = await request("/api/camera/live", {
               method: "POST",
@@ -83,24 +111,67 @@ export function createCanonLiveView({ request = fetch, onFrame, onError, wait = 
             const liveId: string = body.id;
             id = liveId;
             current.signal.throwIfAborted();
-            let seq = -1;
-            while (!current.signal.aborted) {
-              const frame = await request(`/api/camera/live?id=${encodeURIComponent(liveId)}&after=${seq}`, {
-                cache: "no-store",
-                signal: AbortSignal.any([current.signal, AbortSignal.timeout(10000)]),
+            const stream = await request(`/api/camera/live/stream?id=${encodeURIComponent(liveId)}`, {
+              cache: "no-store",
+              signal: current.signal,
+            });
+            if (!stream.ok) await fail(stream);
+            if (!stream.body) throw new LiveViewRequestError("The Canon live preview stream could not be read.", true);
+            reader = stream.body.getReader();
+            const parser = createLiveStreamParser();
+            const read = () => {
+              const next = reader!.read();
+              const stall = abortableDelay(stallMs, current.signal).then(() => {
+                throw new LiveViewRequestError("The Canon live preview stopped delivering frames. Reconnecting…", true);
               });
-              if (!frame.ok) await fail(frame);
-              const frameSeq = Number(frame.headers.get("X-Frame-Seq"));
-              if (Number.isSafeInteger(frameSeq)) seq = frameSeq;
-              const blob = await frame.blob();
+              const result = Promise.race([next, stall]);
+              // Whichever settles later, or a read orphaned by an error, must not
+              // surface as an unhandled rejection; the race already reports it.
+              for (const promise of [next, stall, result]) promise.catch(() => {});
+              return result;
+            };
+            let reading = read();
+            let frames: LiveStreamFrame[] = [];
+            while (!current.signal.aborted) {
+              let ended = false;
+              const take = (chunk: ReadableStreamReadResult<Uint8Array>) => {
+                if (chunk.done) { ended = true; return; }
+                frames.push(...parser.push(chunk.value));
+                reading = read();
+              };
+              let chunk = await Promise.race([reading, Promise.resolve(NOT_YET)]);
+              if (chunk === NOT_YET) take(await reading);
+              else {
+                // The last frame took longer than a frame interval, so chunks
+                // have queued up. Drain them all and show only the newest.
+                while (chunk !== NOT_YET && !ended) {
+                  take(chunk);
+                  chunk = await Promise.race([reading, settleSoon()]);
+                }
+              }
+              // A stream that closes right after its error chunk must report
+              // that error, not the closing, so pending frames come first.
+              if (!frames.length) {
+                if (ended) throw new LiveViewRequestError("The Canon live preview stream ended. Reconnecting…", true);
+                continue;
+              }
+              const frame = frames[frames.length - 1];
+              frames = [];
+              if (frame.seq === LIVE_STREAM_ERROR_SEQ) {
+                let failure: { error?: string; status?: number } | null = null;
+                try { failure = JSON.parse(new TextDecoder().decode(frame.bytes)); } catch { failure = null; }
+                throw new LiveViewRequestError(
+                  failure?.error || "The Canon live preview stopped. Check the camera, then start preview again when ready.",
+                  RETRYABLE_STATUS(Number(failure?.status) || 503),
+                );
+              }
               current.signal.throwIfAborted();
               retryable = false;
-              await onFrame(blob, current.signal);
+              await onFrame(new Blob([frame.bytes as BlobPart], { type: "image/jpeg" }), current.signal);
               retryable = true;
               current.signal.throwIfAborted();
               attempt = 0;
               resolveReady();
-              await wait(current.signal);
             }
           } catch (error) {
             retry = !current.signal.aborted && retryable &&
@@ -108,6 +179,7 @@ export function createCanonLiveView({ request = fetch, onFrame, onError, wait = 
             if (!retry) rejectReady(error);
             if (!current.signal.aborted) onError(error, { retrying: retry });
           } finally {
+            if (reader) await reader.cancel().catch(() => {});
             if (id) {
               try {
                 await request("/api/camera/live", {

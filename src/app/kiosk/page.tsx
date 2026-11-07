@@ -44,6 +44,27 @@ import "./kiosk.css";
 
 type Stage = "idle" | "capturing" | "saving" | "review" | "sending" | "success";
 
+/** The build this page was compiled from; the server reports its own in /api/kiosk. */
+const PAGE_BUILD = process.env.NEXT_PUBLIC_KIOSK_BUILD ?? null;
+
+/**
+ * After a deploy the server runs new code while the kiosk still shows the old
+ * page. Reload once, between guests, so the booth picks the new build up on
+ * its own. Returns true when a reload has been requested.
+ */
+function reloadForNewBuild(serverBuild: string | null | undefined, stage: Stage): boolean {
+  if (!serverBuild || !PAGE_BUILD || serverBuild === PAGE_BUILD || stage !== "idle") return false;
+  try {
+    // A page that keeps mismatching (a stale cache, say) must not reload forever.
+    if (window.sessionStorage.getItem("kiosk-reloaded-for") === serverBuild) return false;
+    window.sessionStorage.setItem("kiosk-reloaded-for", serverBuild);
+  } catch {
+    return false;
+  }
+  window.location.reload();
+  return true;
+}
+
 /** How much drifting gold light floats behind each screen. */
 const AMBIENT: Record<Stage, number> = { idle: 1, capturing: 0.55, saving: 0.7, review: 0.8, sending: 0.8, success: 1 };
 
@@ -84,7 +105,15 @@ export default function KioskPage() {
     loading: true,
     error: null,
     label: "Camera",
+    fps: 0,
+    renderer: null,
   });
+  // ?stats shows the preview's frame rate and renderer in the Live badge.
+  // The badge only renders after the booth has loaded on the client, so the
+  // server-rendered markup never shows the difference.
+  const [showStats] = useState(
+    () => typeof window !== "undefined" && new URLSearchParams(window.location.search).has("stats"),
+  );
   const [countdown, setCountdown] = useState(5);
   const [photoNumber, setPhotoNumber] = useState(1);
   const [preparingPhoto, setPreparingPhoto] = useState(false);
@@ -108,6 +137,8 @@ export default function KioskPage() {
   const shareRequestRef = useRef<{ sessionId: string; controller: AbortController } | null>(null);
   const settingsAbortRef = useRef<AbortController | null>(null);
   const requestIdRef = useRef("");
+  const stageRef = useRef<Stage>("idle");
+  useEffect(() => { stageRef.current = stage; }, [stage]);
   const flashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fxRef = useRef<MagicFx | null>(null);
   const fxTimersRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
@@ -123,12 +154,13 @@ export default function KioskPage() {
       ? AbortSignal.any([signal, controller.signal])
       : controller.signal;
     try {
-      const data = await api<Omit<StudioData, "sessions">>(
+      const data = await api<Omit<StudioData, "sessions"> & { build?: string | null }>(
         "/api/kiosk",
         undefined,
         requestSignal,
       );
       if (requestSignal.aborted) return;
+      if (reloadForNewBuild(data.build, stageRef.current)) return;
       setStudio(data);
       setLoadingError(null);
       setSettingsRefreshing(false);
@@ -619,6 +651,7 @@ export default function KioskPage() {
                   <div className="kiosk-live-badge">
                     <span className={cameraStatus.ready ? "is-ready" : ""} />
                     {cameraStatus.ready ? "Live" : "Camera starting"}
+                    {showStats && cameraStatus.ready && ` · ${cameraStatus.fps} fps · ${cameraStatus.renderer === "webgl" ? "GPU" : "CPU"}`}
                   </div>
                 )}
                 {isCapturing && (
@@ -964,7 +997,8 @@ const BULBS: CSSProperties[] = (() => {
   return points.map(([left, top], index) => ({
     left,
     top,
-    animationDelay: `${-((index % 3) * 0.4)}s`,
+    // Read by the bulb's ::after, whose opacity carries the chase.
+    ["--k-delay" as string]: `${-((index % 3) * 0.4)}s`,
   }));
 })();
 

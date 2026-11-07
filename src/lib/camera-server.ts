@@ -46,6 +46,18 @@ const CONNECT_HELP =
   "Connect the camera to this computer with a USB data cable and turn it on. Close EOS Utility, Photos, Image Capture, and any other camera app. Use still-photo mode and JPEG or RAW+JPEG quality. For automatic exposure, set the camera to P with ISO Auto; use M when applying manual exposure settings from the app.";
 const MAX_COMMAND_OUTPUT = 1024 * 1024;
 const MAX_JPEG_BYTES = 50 * 1024 * 1024;
+export const LIVE_STREAM_CONTENT_TYPE = "application/vnd.photokiosk.frames";
+/** The frame number that marks a stream's final chunk as a JSON error instead of a JPEG. */
+export const LIVE_STREAM_ERROR_SEQ = 0xffffffff;
+
+/** One live-stream chunk: a 4-byte length, a 4-byte frame number, then the bytes. */
+export function encodeLiveFrame(bytes: Uint8Array, seq: number): Uint8Array {
+  const chunk = Buffer.alloc(8 + bytes.byteLength);
+  chunk.writeUInt32BE(bytes.byteLength, 0);
+  chunk.writeUInt32BE(seq >>> 0, 4);
+  chunk.set(bytes, 8);
+  return chunk;
+}
 // A healthy shot (live view entry, autofocus, shutter, download) takes 2-3 s.
 // When live-view AF misses, the 5D Mark IV silently ignores the full press and
 // libgphoto2 waits about 90 s for a photo that never arrives. Give up well
@@ -550,6 +562,60 @@ export class CameraController {
       bytes = this.liveFrame(id);
     }
     return { bytes, seq: this.live!.stream.frameSeq };
+  }
+
+  /**
+   * Every new frame as it arrives, on one long-lived response, so the kiosk
+   * shows the camera's full 30 fps without a request per frame. Each chunk is
+   * a length-prefixed frame (see encodeLiveFrame); a final chunk carries the
+   * error that ended the stream, since the HTTP status has already been sent.
+   */
+  liveFrameStream(id: unknown, signal?: AbortSignal): ReadableStream<Uint8Array> {
+    // Fail with a real HTTP status now, before any frame bytes are committed.
+    this.liveFrame(id);
+    const reader = new AbortController();
+    const abort = () => reader.abort();
+    signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) abort();
+    // The open connection is proof the kiosk is alive, so the lease is renewed
+    // on a timer rather than only when the page gets around to reading.
+    const keepAlive = setInterval(() => {
+      try { this.liveFrame(id); } catch { clearInterval(keepAlive); }
+    }, Math.max(20, (this.liveOptions.leaseMs ?? 5000) / 4));
+    keepAlive.unref();
+    const release = () => {
+      clearInterval(keepAlive);
+      signal?.removeEventListener("abort", abort);
+    };
+    let seq = -1;
+    return new ReadableStream<Uint8Array>({
+      pull: async (stream) => {
+        try {
+          let frame = await this.nextLiveFrame(id, seq, reader.signal);
+          // Waiting timed out without a newer frame: keep waiting rather than repeat it.
+          while (frame.seq === seq) {
+            assertCameraRequestActive(reader.signal);
+            frame = await this.nextLiveFrame(id, seq, reader.signal);
+          }
+          seq = frame.seq;
+          stream.enqueue(encodeLiveFrame(frame.bytes, frame.seq));
+        } catch (error) {
+          release();
+          if (!reader.signal.aborted) {
+            const failure = recognizedCameraError(error) ?? new CameraError("The camera operation failed.");
+            stream.enqueue(encodeLiveFrame(
+              Buffer.from(JSON.stringify({ error: failure.message, code: failure.code, status: failure.status })),
+              LIVE_STREAM_ERROR_SEQ,
+            ));
+          }
+          stream.close();
+        }
+      },
+      cancel: () => {
+        release();
+        reader.abort();
+      },
+    });
   }
 
   async stopLive(id: unknown): Promise<void> {

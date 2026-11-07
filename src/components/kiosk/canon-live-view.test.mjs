@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createCanonLiveView } from "./canon-live-view.ts";
+import { createCanonLiveView, createLiveStreamParser, LIVE_STREAM_ERROR_SEQ } from "./canon-live-view.ts";
 
 function deferred() {
   let resolve;
@@ -19,9 +19,66 @@ function nextTurn() {
   return new Promise((resolve) => setImmediate(resolve));
 }
 
-function jpeg(value = "synthetic preview frame") {
-  return new Response(value, { headers: { "Content-Type": "image/jpeg" } });
+function encode(bytes, seq) {
+  const chunk = new Uint8Array(8 + bytes.byteLength);
+  new DataView(chunk.buffer).setUint32(0, bytes.byteLength);
+  new DataView(chunk.buffer).setUint32(4, seq >>> 0);
+  chunk.set(bytes, 8);
+  return chunk;
 }
+
+const text = (value) => new TextEncoder().encode(value);
+
+/**
+ * A live stream response the test feeds by hand. Like a real fetch body, it
+ * fails its reader once the request signal aborts.
+ */
+function frameStream(signal) {
+  let controller;
+  let seq = 0;
+  const body = new ReadableStream({
+    start(c) {
+      controller = c;
+      const abort = () => { try { c.error(signal?.reason ?? new DOMException("aborted", "AbortError")); } catch {} };
+      if (signal?.aborted) abort();
+      else signal?.addEventListener("abort", abort, { once: true });
+    },
+  });
+  return {
+    response: new Response(body, { headers: { "Content-Type": "application/vnd.photokiosk.frames" } }),
+    frame(value = "synthetic preview frame", number = ++seq) { controller.enqueue(encode(text(value), number)); },
+    chunk(bytes) { controller.enqueue(bytes); },
+    error(status, error) {
+      controller.enqueue(encode(text(JSON.stringify({ error, status, code: "camera_error" })), LIVE_STREAM_ERROR_SEQ));
+      controller.close();
+    },
+    end() { try { controller.close(); } catch {} },
+  };
+}
+
+/** One frame, then the stream stays open until the request is cancelled. */
+function oneFrame(signal, value) {
+  const stream = frameStream(signal);
+  stream.frame(value);
+  return stream.response;
+}
+
+test("the stream parser reassembles frames across arbitrary chunk boundaries", () => {
+  const parser = createLiveStreamParser();
+  const first = encode(text("frame one"), 1);
+  const second = encode(text("two"), 2);
+  const error = encode(text("{}"), LIVE_STREAM_ERROR_SEQ);
+  const all = new Uint8Array([...first, ...second, ...error]);
+  assert.deepEqual(parser.push(all.subarray(0, 3)), []);
+  assert.deepEqual(parser.push(all.subarray(3, 11)), []);
+  const [one] = parser.push(all.subarray(11, first.byteLength + 5));
+  assert.equal(one.seq, 1);
+  assert.equal(new TextDecoder().decode(one.bytes), "frame one");
+  const rest = parser.push(all.subarray(first.byteLength + 5));
+  assert.deepEqual(rest.map((frame) => frame.seq), [2, LIVE_STREAM_ERROR_SEQ]);
+  assert.equal(new TextDecoder().decode(rest[0].bytes), "two");
+  assert.deepEqual(parser.push(new Uint8Array(0)), []);
+});
 
 test("kiosk recovery waits through server startup and acquires a new ID after a restart", { timeout: 2000 }, async () => {
   const calls = [];
@@ -41,13 +98,14 @@ test("kiosk recovery waits through server startup and acquires a new ID after a 
         return Response.json({ id: `restart-${starts}` });
       }
       if (method === "DELETE") return Response.json({ stopped: true });
-      if (starts === 3 && frames === 1)
-        return Response.json({ error: "Old session expired" }, { status: 410 });
-      return jpeg();
+      const stream = frameStream(options.signal);
+      stream.frame();
+      // The third session's stream dies after its first frame, as when the server restarts again.
+      if (starts === 3) setTimeout(() => stream.error(410, "Old session expired"), 5);
+      return stream.response;
     },
     onFrame: () => { if (++frames === 2) recovered.resolve(); },
     onError: (error) => errors.push(error),
-    wait: (signal) => frames < 2 ? Promise.resolve() : waitForAbort(signal),
     reconnect: { allowed: () => true, wait: async (attempt) => { retries.push(attempt); } },
   });
   const running = preview.start();
@@ -58,6 +116,7 @@ test("kiosk recovery waits through server startup and acquires a new ID after a 
   assert.equal(starts, 4);
   assert.deepEqual(retries, [1, 2, 1], "Backoff resets after a healthy frame");
   assert.equal(errors.length, 3);
+  assert.match(errors[2].message, /Old session expired/);
   assert.deepEqual(calls.filter(({ method }) => method === "DELETE").map(({ body }) => JSON.parse(body)), [
     { id: "restart-3" }, { id: "restart-4" },
   ]);
@@ -87,6 +146,73 @@ test("errors report whether automatic recovery will actually reconnect", { timeo
     await preview.start();
     assert.deepEqual(states, retrying, name);
   }
+});
+
+test("a stream that ends with a camera error is retried only when that error is retryable", { timeout: 2000 }, async () => {
+  for (const [status, retrying] of [[503, [true, false]], [400, [false]]]) {
+    const states = [];
+    let starts = 0;
+    const preview = createCanonLiveView({
+      request: async (url, options = {}) => {
+        const method = options.method || "GET";
+        if (method === "POST") {
+          starts++;
+          if (starts > 1) return Response.json({ error: "stop here" }, { status: 400 });
+          return Response.json({ id: "ends-with-error" });
+        }
+        if (method === "DELETE") return Response.json({ stopped: true });
+        const stream = frameStream(options.signal);
+        stream.error(status, "SYNTHETIC stream failure");
+        return stream.response;
+      },
+      onFrame: () => assert.fail("The failing stream has no frames"),
+      onError: (_error, state) => states.push(state.retrying),
+      reconnect: { allowed: () => true, wait: async () => {} },
+    });
+    await preview.start();
+    assert.deepEqual(states, retrying, `status ${status}`);
+  }
+});
+
+test("an error chunk followed at once by the stream closing reports the error, not the closing", { timeout: 2000 }, async () => {
+  const errors = [];
+  let starts = 0;
+  const preview = createCanonLiveView({
+    request: async (url, options = {}) => {
+      const method = options.method || "GET";
+      if (method === "POST") return Response.json({ id: "closing" }, { status: ++starts > 1 ? 400 : 200 });
+      if (method === "DELETE") return Response.json({ stopped: true });
+      const stream = frameStream(options.signal);
+      stream.frame("last good frame");
+      stream.error(410, "Canon live preview has ended.");
+      return stream.response;
+    },
+    onFrame: () => {},
+    onError: (error) => errors.push(error.message),
+    reconnect: { allowed: () => true, wait: async () => {} },
+  });
+  await preview.start();
+  assert.match(errors[0], /has ended/);
+});
+
+test("a stream that falls silent is treated as a retryable interruption", { timeout: 2000 }, async () => {
+  const errors = [];
+  let starts = 0;
+  const preview = createCanonLiveView({
+    stallMs: 20,
+    request: async (url, options = {}) => {
+      const method = options.method || "GET";
+      if (method === "POST") return Response.json({ id: "silent" }, { status: ++starts > 1 ? 400 : 200 });
+      if (method === "DELETE") return Response.json({ stopped: true });
+      return frameStream(options.signal).response;
+    },
+    onFrame: () => assert.fail("A silent stream has no frames"),
+    onError: (error, state) => errors.push([error.message, state.retrying]),
+    reconnect: { allowed: () => true, wait: async () => {} },
+  });
+  await preview.start();
+  assert.match(errors[0][0], /stopped delivering frames/);
+  assert.equal(errors[0][1], true);
 });
 
 test("stopping during reconnect backoff cancels all later attempts", { timeout: 2000 }, async () => {
@@ -132,7 +258,7 @@ for (const failure of ["processing", "invalid-request"]) {
           starts++;
           return failure === "invalid-request" ? Response.json({ error: "Invalid request" }, { status: 400 }) : Response.json({ id: "processing" });
         }
-        return options.method === "DELETE" ? Response.json({ stopped: true }) : jpeg();
+        return options.method === "DELETE" ? Response.json({ stopped: true }) : oneFrame(options.signal);
       },
       onFrame: () => { throw new Error("Invalid preview frame"); },
       onError: (error) => errors.push(error),
@@ -148,10 +274,9 @@ for (const failure of ["processing", "invalid-request"]) {
 test("creating or stopping Canon live view performs no request", { timeout: 2000 }, async () => {
   const calls = [];
   const preview = createCanonLiveView({
-    request: async (...args) => { calls.push(args); return jpeg(); },
+    request: async (...args) => { calls.push(args); return oneFrame(); },
     onFrame: () => assert.fail("An inactive preview cannot publish a frame."),
     onError: () => assert.fail("An inactive preview cannot report a camera error."),
-    wait: waitForAbort,
   });
   await nextTurn();
   await preview.stop();
@@ -159,14 +284,15 @@ test("creating or stopping Canon live view performs no request", { timeout: 2000
   assert.deepEqual(calls, []);
 });
 
-test("one explicit start reads multiple cached frames and shares one active promise", { timeout: 2000 }, async () => {
+test("one explicit start reads every frame of one stream in order and shares one active promise", { timeout: 2000 }, async () => {
   const id = "synthetic preview/A";
   const calls = [];
   const frames = [];
-  const readSignals = [];
   const errors = [];
   const threeFrames = deferred();
   let sourceSignal;
+  let streamSignal;
+  let stream;
   const preview = createCanonLiveView({
     request: async (url, options = {}) => {
       const method = options.method || "GET";
@@ -176,15 +302,13 @@ test("one explicit start reads multiple cached frames and shares one active prom
         return Response.json({ id });
       }
       if (method === "GET") {
-        // Each read asks for a frame newer than the last one it received.
-        const after = readSignals.length === 0 ? -1 : readSignals.length * 10;
-        assert.equal(url, `/api/camera/live?id=${encodeURIComponent(id)}&after=${after}`);
+        assert.equal(url, `/api/camera/live/stream?id=${encodeURIComponent(id)}`);
         assert.ok(options.signal instanceof AbortSignal);
         assert.equal(options.signal.aborted, false);
-        readSignals.push(options.signal);
-        return new Response(`frame ${frames.length + 1}`, {
-          headers: { "Content-Type": "image/jpeg", "X-Frame-Seq": String(readSignals.length * 10) },
-        });
+        streamSignal = options.signal;
+        stream = frameStream(options.signal);
+        stream.frame("frame 1");
+        return stream.response;
       }
       assert.equal(method, "DELETE");
       assert.deepEqual(JSON.parse(options.body), { id });
@@ -196,11 +320,12 @@ test("one explicit start reads multiple cached frames and shares one active prom
     onFrame: async (blob, signal) => {
       assert.equal(signal, sourceSignal);
       assert.equal(signal.aborted, false);
+      assert.equal(blob.type, "image/jpeg");
       frames.push(await blob.text());
-      if (frames.length === 3) threeFrames.resolve();
+      if (frames.length < 3) stream.frame(`frame ${frames.length + 1}`);
+      else threeFrames.resolve();
     },
     onError: (error) => errors.push(error),
-    wait: (signal) => frames.length < 3 ? Promise.resolve() : waitForAbort(signal),
   });
   const running = preview.start();
   assert.equal(preview.start(), running);
@@ -208,13 +333,47 @@ test("one explicit start reads multiple cached frames and shares one active prom
   await preview.stop();
   await running;
   assert.deepEqual(frames, ["frame 1", "frame 2", "frame 3"]);
-  assert.ok(readSignals.every((signal) => signal.aborted));
-  assert.deepEqual(calls.map(({ method }) => method), ["POST", "GET", "GET", "GET", "DELETE"]);
-  assert.ok(calls.every(({ url }) => url === "/api/camera/live" || url.startsWith("/api/camera/live?id=")));
+  assert.equal(streamSignal.aborted, true);
+  assert.deepEqual(calls.map(({ method }) => method), ["POST", "GET", "DELETE"]);
   assert.deepEqual(errors, []);
 });
 
-test("stop waits for an in-flight cached GET and discards its late frame before cleanup", { timeout: 2000 }, async () => {
+test("frames that pile up while one is being processed are skipped in favour of the newest", { timeout: 2000 }, async () => {
+  const frames = [];
+  const firstProcessing = deferred();
+  const finishFirst = deferred();
+  const done = deferred();
+  let stream;
+  const preview = createCanonLiveView({
+    request: async (url, options = {}) => {
+      const method = options.method || "GET";
+      if (method === "POST") return Response.json({ id: "backlog" });
+      if (method === "DELETE") return Response.json({ stopped: true });
+      stream = frameStream(options.signal);
+      stream.frame("frame 1");
+      return stream.response;
+    },
+    onFrame: async (blob) => {
+      frames.push(await blob.text());
+      if (frames.length === 1) { firstProcessing.resolve(); await finishFirst.promise; }
+      if (frames.length === 2) done.resolve();
+    },
+    onError: (error) => assert.fail(error.message),
+  });
+  const running = preview.start();
+  await firstProcessing.promise;
+  // Three frames arrive, one chunk carrying two of them, while frame 1 is still being keyed.
+  stream.frame("frame 2");
+  stream.chunk(new Uint8Array([...encode(text("frame 3"), 3), ...encode(text("frame 4"), 4)]));
+  await nextTurn();
+  finishFirst.resolve();
+  await done.promise;
+  await preview.stop();
+  await running;
+  assert.deepEqual(frames, ["frame 1", "frame 4"], "stale frames 2 and 3 are never shown");
+});
+
+test("stop waits for an in-flight stream request and discards its late frame before cleanup", { timeout: 2000 }, async () => {
   const getStarted = deferred();
   const lateResponse = deferred();
   const calls = [];
@@ -236,7 +395,6 @@ test("stop waits for an in-flight cached GET and discards its late frame before 
     },
     onFrame: () => { frames++; },
     onError: (error) => errors.push(error),
-    wait: waitForAbort,
   });
   const running = preview.start();
   await getStarted.promise;
@@ -244,7 +402,7 @@ test("stop waits for an in-flight cached GET and discards its late frame before 
   await nextTurn();
   assert.equal(sourceSignal.aborted, true);
   assert.deepEqual(calls, ["POST", "GET"]);
-  lateResponse.resolve(jpeg("discard this cancelled frame"));
+  lateResponse.resolve(oneFrame(undefined, "discard this cancelled frame"));
   await stopping;
   await running;
   assert.equal(frames, 0);
@@ -263,7 +421,7 @@ test("stop waits for frame processing to settle before deleting the live view", 
       const method = options.method || "GET";
       calls.push(method);
       if (method === "POST") return Response.json({ id: "processing-frame" });
-      return method === "GET" ? jpeg() : Response.json({ stopped: true });
+      return method === "GET" ? oneFrame(options.signal) : Response.json({ stopped: true });
     },
     onFrame: async (blob, signal) => {
       frameSignal = signal;
@@ -271,7 +429,6 @@ test("stop waits for frame processing to settle before deleting the live view", 
       await finishProcessing.promise;
     },
     onError: (error) => errors.push(error),
-    wait: waitForAbort,
   });
   const running = preview.start();
   await processing.promise;
@@ -311,7 +468,6 @@ test("cancelling before a late start JSON response still deletes the received li
     },
     onFrame: () => assert.fail("A cancelled start cannot publish a frame."),
     onError: (error) => errors.push(error),
-    wait: waitForAbort,
   });
   const running = preview.start();
   await jsonStarted.promise;
@@ -336,7 +492,7 @@ test("a start during pending cleanup cannot start another process or replace the
       const method = options.method || "GET";
       calls.push(method);
       if (method === "POST") return Response.json({ id: "cleanup-still-pending" });
-      if (method === "GET") return jpeg();
+      if (method === "GET") return oneFrame(options.signal);
       assert.deepEqual(JSON.parse(options.body), { id: "cleanup-still-pending" });
       cleanupStarted.resolve();
       await finishCleanup.promise;
@@ -344,7 +500,6 @@ test("a start during pending cleanup cannot start another process or replace the
     },
     onFrame: () => frameReceived.resolve(),
     onError: () => assert.fail("Stopping live view intentionally cannot report an error."),
-    wait: waitForAbort,
   });
   const running = preview.start();
   await frameReceived.promise;
@@ -357,7 +512,7 @@ test("a start during pending cleanup cannot start another process or replace the
   await running;
 });
 
-for (const failure of ["start-network", "start-http", "frame-http", "frame-processing"]) {
+for (const failure of ["start-network", "start-http", "frame-http", "frame-stream", "frame-processing"]) {
   test(`${failure} failure reports once and makes no automatic restart`, { timeout: 2000 }, async () => {
     const calls = [];
     const errors = [];
@@ -373,13 +528,17 @@ for (const failure of ["start-network", "start-http", "frame-http", "frame-proce
         }
         if (method === "GET") {
           if (failure === "frame-http") return Response.json({ error: message }, { status: 503 });
-          return jpeg();
+          if (failure === "frame-stream") {
+            const stream = frameStream(options.signal);
+            stream.error(503, message);
+            return stream.response;
+          }
+          return oneFrame(options.signal);
         }
         return Response.json({ stopped: true });
       },
       onFrame: () => { throw new Error(message); },
       onError: (error) => errors.push(error),
-      wait: waitForAbort,
     });
     await preview.start();
     await nextTurn();
@@ -402,16 +561,14 @@ test("an explicit restart uses a new ID and never reuses a previous preview's cl
       const method = options.method || "GET";
       calls.push({ url, method, body: options.body });
       if (method === "POST") return Response.json({ id: `preview-${++starts}` });
-      // A frame number from the earlier session must not carry into the next.
-      if (method === "GET") return new Response(url, { headers: { "Content-Type": "image/jpeg", "X-Frame-Seq": "7" } });
+      if (method === "GET") return oneFrame(options.signal, url);
       return Response.json({ stopped: true });
     },
     onFrame: async (blob) => {
-      assert.equal(await blob.text(), `/api/camera/live?id=preview-${starts}&after=-1`);
+      assert.equal(await blob.text(), `/api/camera/live/stream?id=preview-${starts}`);
       received[starts - 1].resolve();
     },
     onError: (error) => errors.push(error),
-    wait: waitForAbort,
   });
   const first = preview.start();
   await received[0].promise;
@@ -423,7 +580,7 @@ test("an explicit restart uses a new ID and never reuses a previous preview's cl
   await preview.stop();
   await second;
   assert.deepEqual(calls.filter(({ method }) => method === "GET").map(({ url }) => url), [
-    "/api/camera/live?id=preview-1&after=-1", "/api/camera/live?id=preview-2&after=-1",
+    "/api/camera/live/stream?id=preview-1", "/api/camera/live/stream?id=preview-2",
   ]);
   assert.deepEqual(calls.filter(({ method }) => method === "DELETE").map(({ body }) => JSON.parse(body)), [
     { id: "preview-1" }, { id: "preview-2" },
@@ -441,11 +598,10 @@ test("readiness waits for the first frame to finish processing while start track
       const method = options.method || "GET";
       calls.push(method);
       if (method === "POST") return Response.json({ id: "first-frame-readiness" });
-      return method === "GET" ? jpeg() : Response.json({ stopped: true });
+      return method === "GET" ? oneFrame(options.signal) : Response.json({ stopped: true });
     },
     onFrame: async () => { processing.resolve(); await processed.promise; },
     onError: () => assert.fail("This preview should not fail."),
-    wait: waitForAbort,
   });
   let lifetimeEnded = false;
   let ready = false;
@@ -478,7 +634,6 @@ test("startup failure rejects readiness and reports once without retrying", { ti
     },
     onFrame: () => assert.fail("A failed start cannot deliver a frame."),
     onError: (error) => errors.push(error),
-    wait: waitForAbort,
   });
   const running = preview.start();
   await assert.rejects(preview.whenReady(), /USB is busy/);
@@ -501,7 +656,7 @@ test("an external guest abort ends the running stream and cleans up its ID", { t
         sourceSignal = options.signal;
         return Response.json({ id: "externally-cancelled" });
       }
-      if (method === "GET") return jpeg();
+      if (method === "GET") return oneFrame(options.signal);
       assert.deepEqual(JSON.parse(options.body), { id: "externally-cancelled" });
       assert.equal(sourceSignal.aborted, true);
       assert.notEqual(options.signal, sourceSignal);
@@ -510,7 +665,6 @@ test("an external guest abort ends the running stream and cleans up its ID", { t
     },
     onFrame: () => {},
     onError: (error) => errors.push(error),
-    wait: waitForAbort,
   });
   const running = preview.start(guest.signal);
   await preview.whenReady();
@@ -526,10 +680,9 @@ test("an already-aborted guest rejects readiness before making any request", { t
   const calls = [];
   const errors = [];
   const preview = createCanonLiveView({
-    request: async (...args) => { calls.push(args); return jpeg(); },
+    request: async (...args) => { calls.push(args); return oneFrame(); },
     onFrame: () => assert.fail("An already-cancelled guest cannot receive a frame."),
     onError: (error) => errors.push(error),
-    wait: waitForAbort,
   });
   const running = preview.start(guest.signal);
   await assert.rejects(preview.whenReady(), { name: "AbortError" });
@@ -547,7 +700,7 @@ test("readiness resets on restart and cannot reuse the preceding stream's ready 
     request: async (url, options = {}) => {
       const method = options.method || "GET";
       if (method === "POST") return Response.json({ id: `readiness-${++starts}` });
-      return method === "GET" ? jpeg() : Response.json({ stopped: true });
+      return method === "GET" ? oneFrame(options.signal) : Response.json({ stopped: true });
     },
     onFrame: async () => {
       const index = starts - 1;
@@ -555,7 +708,6 @@ test("readiness resets on restart and cannot reuse the preceding stream's ready 
       await processed[index].promise;
     },
     onError: (error) => errors.push(error),
-    wait: waitForAbort,
   });
   const first = preview.start();
   const firstReady = preview.whenReady();
@@ -592,11 +744,10 @@ test("external cancellation during first-frame processing rejects readiness and 
       const method = options.method || "GET";
       calls.push(method);
       if (method === "POST") return Response.json({ id: "cancel-before-ready" });
-      return method === "GET" ? jpeg() : Response.json({ stopped: true });
+      return method === "GET" ? oneFrame(options.signal) : Response.json({ stopped: true });
     },
     onFrame: async () => { processing.resolve(); await processed.promise; },
     onError: (error) => errors.push(error),
-    wait: waitForAbort,
   });
   const running = preview.start(guest.signal);
   const readinessRejected = assert.rejects(preview.whenReady(), { name: "AbortError" });
@@ -614,10 +765,9 @@ test("external cancellation during first-frame processing rejects readiness and 
 test("asking for readiness before an explicit start cannot start camera transport", async () => {
   let requests = 0;
   const preview = createCanonLiveView({
-    request: async () => { requests++; return jpeg(); },
+    request: async () => { requests++; return oneFrame(); },
     onFrame: () => assert.fail("No frame can arrive before explicit start."),
     onError: () => assert.fail("Waiting before start cannot report a hardware error."),
-    wait: waitForAbort,
   });
   await assert.rejects(preview.whenReady(), /Start Canon live preview/);
   assert.equal(requests, 0);
