@@ -87,6 +87,32 @@ export interface PhotoSession {
     error?: string;
   }>;
 }
+export interface AlbumPhoto {
+  id: string;
+  /** The uploaded file's name, offered as the download name. */
+  name: string;
+  width: number;
+  height: number;
+  /** Paths inside the album's Backblaze folder. */
+  file: string;
+  thumb: string;
+  /** Sort key, so photos keep the order they were chosen in. */
+  order: number;
+  uploadedAt: string;
+}
+export interface PhotoAlbum {
+  id: string;
+  title: string;
+  createdAt: string;
+  photos: AlbumPhoto[];
+  /** Public URL of the album's Backblaze folder, ending in "/". Set by the first upload. */
+  baseUrl?: string;
+  /** Bumped by every change, so Admin can tell when the live page is behind. */
+  revision: number;
+  publishedRevision?: number;
+  galleryUrl?: string;
+  publishedAt?: string;
+}
 export interface StudioData {
   settings: KioskSettings;
   backgrounds: Background[];

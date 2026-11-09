@@ -2,7 +2,7 @@
 
 A local photo booth with green-screen background replacement and a USB camera. Built with Next.js 16, React, and TypeScript.
 
-- **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, photo overlays, background replacement, camera settings, Backblaze B2 sharing, Gmail, and the gallery with recipients and delivery history.
+- **Admin:** [http://127.0.0.1:3000/admin](http://127.0.0.1:3000/admin) (also available at `/`). Manage backgrounds, photo overlays, background replacement, camera settings, Backblaze B2 sharing, Gmail, the gallery with recipients and delivery history, and photo albums published to Backblaze.
 - **Kiosk:** [http://127.0.0.1:3000/kiosk](http://127.0.0.1:3000/kiosk). Camera preview with background replacement, a five-second countdown, three photos with three-second intervals, review/retake, and optional QR sharing and email delivery after capture.
 
 The kiosk and the guests' download page use the Diwali 2026 "Light Beyond Lamps" logo and the Dehanna font, in black and gold. Gold light drifts behind the booth, a touch leaves sparkles, flames spiral around the camera when a guest starts, and sparkles carry each photo to its slot. The light is drawn on the screen only and never appears in the photos. On a slow computer open `/kiosk?fx=low` for half as much, or `/kiosk?fx=off` to turn it off. It is also off when the computer is set to reduce motion. Everything that moves continuously animates only transform or opacity, so the browser's compositor runs it without repainting. Add `?stats` to the kiosk URL to show the preview's frame rate and whether it is keyed on the GPU in the Live badge.
@@ -185,6 +185,14 @@ When B2 is enabled and configured, each saved session uploads automatically and 
 **These are public links.** Random session folders make links difficult to guess, but anyone who has a link can view and share the photos. The gallery contains no recipient email address or credentials. There is no guest password or automatic link expiry. Disabling B2 sharing does not revoke existing links. Manage deletion and retention in Backblaze, including any old file versions or partially completed uploads; deleting local photos does not remove cloud copies. Use a dedicated event bucket and agree on a retention policy before sharing guest photos.
 
 The local server needs internet access to upload. Once uploaded, the gallery remains available from B2 while the booth is offline or switched off, subject to your bucket access, retention, and account limits. A real B2 upload and phone download check requires your own account; automated tests use mocked B2 responses and do not upload guest photos.
+
+## Photo albums
+
+**Admin → Photo albums** publishes any number of photos, such as a photographer's shots of the event, as one shareable page on the same B2 bucket. Name an album, then drop in photos (JPEG, PNG, WebP, AVIF, or TIFF, up to 50 MB each; export iPhone HEIC photos as JPEG first). Admin sends them three at a time. The server turns each one upright, caps it at 4096 px on the long side, saves it as a JPEG without camera metadata such as GPS location, and uploads it with a 1080 px preview. When the batch finishes, it builds the album's `index.html` and uploads it. Admin then shows the link, a QR code, and a downloadable QR image. Photos keep the order of their file names, which is usually the order they were taken.
+
+The album page has the same design and wording as the booth's QR gallery: **Your photos**, the event name, **Download all N photos**, and **View photo N** and **Download** under each photo. Tapping a photo opens it full size. Guests can swipe or use the arrow keys to move between photos, and on phones that support it, **Save to phone** opens the share sheet for that photo. The album's name appears only in Admin.
+
+Albums live in `photo-albums/<random-album-id>/` (after any application-key prefix). Adding or removing photos updates the live page. If an update fails, Admin shows **Publish changes**. The application key only needs `writeFiles`, so removing a photo takes it off the page but leaves its file in the bucket. Deleting an album replaces its page with a "no longer available" notice. To remove the files completely, delete the album's folder in Backblaze. These are public links, like the booth galleries above.
 
 ## Local data
 

@@ -109,8 +109,10 @@ async function api(
   }));
 }
 
-async function connect(fetcher: Fetcher): Promise<Connection> {
-  const credentials = await getB2Credentials();
+type Credentials = Awaited<ReturnType<typeof getB2Credentials>>;
+
+async function connect(fetcher: Fetcher, saved?: Credentials): Promise<Connection> {
+  const credentials = saved ?? await getB2Credentials();
   if (!credentials.configured)
     throw new StudioError("Save a Backblaze bucket name, application key ID, and application key in Admin first.", 422);
   const authorization = await json(await request(fetcher,
@@ -204,6 +206,61 @@ async function upload(
 
 function publicURL(connection: Connection, fileName: string): string {
   return `${connection.downloadUrl}/file/${encodeURIComponent(connection.bucketName)}/${fileName.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+// An album uploads one photo per request, often hundreds in a row. Reuse the
+// account authorization instead of signing in for every photo. B2 tokens last
+// 24 hours; an hour keeps well clear of that. Keyed by fetcher so tests that
+// inject their own never share a connection.
+const CONNECTION_LIFETIME = 60 * 60 * 1000;
+const connections = new WeakMap<Fetcher, {
+  fingerprint: string;
+  expires: number;
+  connection: Promise<Connection>;
+}>();
+
+async function reusableConnection(fetcher: Fetcher, fresh: boolean): Promise<Connection> {
+  const credentials = await getB2Credentials();
+  // Saving different credentials in Admin must never reuse the old sign-in.
+  const fingerprint = createHash("sha256").update(JSON.stringify([
+    credentials.configured, credentials.keyId, credentials.bucketName, credentials.applicationKey,
+  ])).digest("hex");
+  const cached = connections.get(fetcher);
+  if (!fresh && cached && cached.fingerprint === fingerprint && cached.expires > Date.now())
+    return cached.connection;
+  const connection = connect(fetcher, credentials);
+  connections.set(fetcher, { fingerprint, expires: Date.now() + CONNECTION_LIFETIME, connection });
+  connection.catch(() => {
+    if (connections.get(fetcher)?.connection === connection) connections.delete(fetcher);
+  });
+  return connection;
+}
+
+export type FolderFile = { name: string; bytes: Uint8Array; contentType: string };
+
+/**
+ * Uploads files into one folder of the public bucket (under the key's name
+ * prefix) and returns the folder's public URL, ending in "/".
+ */
+export async function uploadFolderToB2(
+  folder: string,
+  files: FolderFile[],
+  fetcher: Fetcher = fetch,
+): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const connection = await reusableConnection(fetcher, attempt > 0);
+      const prefix = connection.namePrefix;
+      const directory = `${prefix}${prefix && !prefix.endsWith("/") ? "/" : ""}${folder}/`;
+      let target = await uploadTarget(connection, fetcher);
+      for (const file of files)
+        target = await upload(connection, target, `${directory}${file.name}`, file.bytes, file.contentType, "inline", fetcher);
+      return publicURL(connection, directory);
+    } catch (error) {
+      // A reused authorization can expire or be revoked. Sign in again once.
+      if (attempt > 0 || !(error instanceof B2Error) || !error.retryable) throw error;
+    }
+  }
 }
 
 export async function testB2Connection(fetcher: Fetcher = fetch) {

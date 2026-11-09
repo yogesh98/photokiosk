@@ -19,6 +19,7 @@ import {
   type CameraExposureMode,
   type KioskSettings,
   type Overlay,
+  type PhotoAlbum,
   type PhotoSession,
   type StudioData,
 } from "./kiosk-types";
@@ -37,6 +38,7 @@ type SavedState = StudioData & {
   gmailAppPassword: string;
   b2ApplicationKey: string;
   requestIds?: Record<string, string>;
+  albums?: PhotoAlbum[];
 };
 type StoreLock = { tail: Promise<void>; initialized: boolean };
 const globalStore = globalThis as typeof globalThis & {
@@ -151,6 +153,7 @@ async function withStore<T>(
         (state.settings.activeOverlayId !== undefined &&
           typeof state.settings.activeOverlayId !== "string") ||
         (state.overlays !== undefined && !Array.isArray(state.overlays)) ||
+        (state.albums !== undefined && !Array.isArray(state.albums)) ||
         !Array.isArray(state.backgrounds) ||
         !Array.isArray(state.sessions)
       ) {
@@ -290,6 +293,13 @@ export async function getB2Credentials() {
     ...publicSettings(state).b2,
     applicationKey: state.b2ApplicationKey,
   }));
+}
+/** Albums share the studio lock, so each change is written atomically with everything else. */
+export async function withAlbums<T>(
+  action: (albums: PhotoAlbum[]) => Promise<T> | T,
+  write = false,
+): Promise<T> {
+  return withStore((state) => action((state.albums ??= [])), write);
 }
 
 function record(value: unknown, name: string): Record<string, unknown> {

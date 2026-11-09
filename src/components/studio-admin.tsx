@@ -7,6 +7,7 @@ import {
   ArrowDownToLine,
   ArrowRight,
   ArrowUpRight,
+  BookImage,
   Camera,
   Check,
   CheckCircle2,
@@ -35,6 +36,7 @@ import {
 import { LivePreview } from "@/components/kiosk/live-preview";
 import { BackgroundSequenceSettings } from "@/components/background-sequence-settings";
 import { BackblazeSettings } from "@/components/backblaze-settings";
+import { PhotoAlbums } from "@/components/photo-albums";
 import { OverlayLibrary, OverlayUploadModal } from "@/components/overlay-settings";
 import { resolveSessionBackgrounds } from "@/lib/background-sequence";
 import {
@@ -60,10 +62,11 @@ import {
   UploadModal,
 } from "./studio-forms";
 
-type Tab = "overview" | "photos" | "backgrounds" | "overlays" | "camera" | "email" | "storage";
+type Tab = "overview" | "photos" | "albums" | "backgrounds" | "overlays" | "camera" | "email" | "storage";
 const navItems = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "photos", label: "Photo gallery", icon: Images },
+  { id: "albums", label: "Photo albums", icon: BookImage },
   { id: "backgrounds", label: "Backgrounds", icon: ImagePlus },
   { id: "overlays", label: "Overlays", icon: Layers },
   { id: "camera", label: "Camera setup", icon: Camera },
@@ -852,6 +855,13 @@ export function StudioAdmin() {
                 </div>
               )}
             </>
+          )}
+          {tab === "albums" && (
+            <PhotoAlbums
+              settings={settings}
+              notify={notify}
+              onConnectStorage={() => setTab("storage")}
+            />
           )}
           {tab === "backgrounds" && (
             <>
