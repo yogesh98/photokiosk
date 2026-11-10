@@ -520,6 +520,39 @@
 .kiosk-countdown-overlay > strong > svg {
   filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 24px rgba(255, 190, 90, 0.7));
 }
+/* Points guests at the camera, which sits to the left of the screen. */
+.kiosk-look-here {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: clamp(18px, 3.4vw, 40px);
+  height: fit-content;
+  margin-block: auto;
+  display: flex;
+  align-items: center;
+  gap: clamp(8px, 1.4vw, 16px);
+  padding: clamp(10px, 1.6vw, 18px) clamp(16px, 2.4vw, 28px) clamp(10px, 1.6vw, 18px) clamp(10px, 1.6vw, 18px);
+  border: 3px solid var(--k-gold);
+  border-radius: 999px;
+  background: rgba(7, 6, 10, 0.78);
+  box-shadow: 0 0 28px rgba(255, 190, 90, 0.45);
+  color: var(--k-gold-hi);
+  font-family: var(--k-body);
+  font-size: clamp(20px, 3.6vw, 40px);
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-shadow: 0 0 14px rgba(255, 190, 90, 0.7);
+  animation: kiosk-look-in 0.45s var(--k-ease) both;
+}
+.kiosk-look-here > svg {
+  flex: none;
+  width: clamp(40px, 7vw, 76px);
+  height: clamp(40px, 7vw, 76px);
+  filter: drop-shadow(0 0 10px rgba(255, 190, 90, 0.8));
+  animation: kiosk-look-nudge 0.9s ease-in-out infinite;
+}
 .kiosk-flash {
   /* Fixed so the flash fills the whole screen, like a real booth. */
   position: fixed;
@@ -1573,6 +1606,25 @@
   100% {
     opacity: 0;
     transform: scale(0.8);
+  }
+}
+@keyframes kiosk-look-in {
+  from {
+    opacity: 0;
+    transform: translateX(-40px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes kiosk-look-nudge {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  50% {
+    transform: translateX(-12px);
   }
 }
 @keyframes kiosk-flash {

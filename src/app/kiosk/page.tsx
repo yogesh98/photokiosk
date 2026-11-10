@@ -670,6 +670,17 @@ export default function KioskPage() {
                     <span className="kiosk-sr-only">
                       Photo {photoNumber} of 3.
                     </span>
+                    {/* Outside the keyed number so it stays put while the seconds pop. */}
+                    {!preparingPhoto && (
+                      <div className="kiosk-look-here" aria-hidden="true">
+                        <ArrowLeft strokeWidth={3} />
+                        <span>
+                          Look
+                          <br />
+                          here
+                        </span>
+                      </div>
+                    )}
                     <strong key={`${photoNumber}-${countdown}-${preparingPhoto}`}>
                       {preparingPhoto ? (
                         <LoaderCircle
